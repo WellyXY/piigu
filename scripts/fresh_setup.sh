@@ -43,6 +43,20 @@ pip install -q av accelerate gfpgan opencv-python-headless imageio imageio-ffmpe
     soundfile bitsandbytes safetensors einops "transformers==4.52.1" sentencepiece protobuf \
     "ray[default]" fastapi "uvicorn[standard]" pydantic
 
+# Pin torch ecosystem versions to match cu130 builds (avoids ABI mismatch)
+pip install --no-deps \
+    "torchvision==0.26.0+cu130" \
+    "torchaudio==2.11.0+cu130" \
+    --index-url https://download.pytorch.org/whl/cu130
+
+# bitsandbytes on CUDA 13 needs libnvJitLink.so.13 — set LD_LIBRARY_PATH
+NVCU13_LIB=/usr/local/lib/python3.11/dist-packages/nvidia/cu13/lib
+if [ -d "$NVCU13_LIB" ]; then
+    echo "export LD_LIBRARY_PATH=${NVCU13_LIB}:\${LD_LIBRARY_PATH}" >> /root/.bashrc
+    export LD_LIBRARY_PATH="${NVCU13_LIB}:${LD_LIBRARY_PATH}"
+    echo "  cu13 lib path set"
+fi
+
 apt-get install -y -q ffmpeg
 
 # Patch basicsr torchvision compat
@@ -130,8 +144,18 @@ echo ""
 echo "[6/6] Starting Parrot API server..."
 pkill -f 'python server.py' 2>/dev/null || true
 sleep 2
+
+# Use wrapper to ensure LD_LIBRARY_PATH is set for bitsandbytes cu13
+cat > /workspace/start_server.sh << 'WRAPPER'
+#!/bin/bash
+NVCU13=/usr/local/lib/python3.11/dist-packages/nvidia/cu13/lib
+[ -d "$NVCU13" ] && export LD_LIBRARY_PATH="${NVCU13}:${LD_LIBRARY_PATH}"
 cd /workspace/parrot-api
-nohup python server.py > /workspace/parrot-api.log 2>&1 &
+exec python server.py
+WRAPPER
+chmod +x /workspace/start_server.sh
+
+nohup /workspace/start_server.sh > /workspace/parrot-api.log 2>&1 &
 echo "  Server PID: $!"
 echo ""
 echo "============================================"

@@ -233,9 +233,10 @@ def process_video(enhancer, input_path, output_path,
     ]
     if vf:
         cmd += ['-vf', ','.join(vf)]
+    duration = n / fps
     cmd += ['-c:v', 'libx264', '-preset', 'ultrafast',
             '-crf', '18', '-pix_fmt', 'yuv420p',
-            '-c:a', 'copy', '-shortest', output_path]
+            '-c:a', 'copy', '-t', str(duration), output_path]
 
     proc = subprocess.Popen(cmd, stdin=subprocess.PIPE,
                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
