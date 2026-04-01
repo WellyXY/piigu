@@ -40,7 +40,7 @@ pip install -q --no-deps \
 
 echo "[1/6] Installing other Python deps..."
 pip install -q av accelerate gfpgan opencv-python-headless imageio imageio-ffmpeg \
-    soundfile bitsandbytes safetensors einops transformers sentencepiece protobuf \
+    soundfile bitsandbytes safetensors einops "transformers==4.52.1" sentencepiece protobuf \
     "ray[default]" fastapi "uvicorn[standard]" pydantic
 
 apt-get install -y -q ffmpeg
