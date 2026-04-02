@@ -45,6 +45,7 @@ ENHANCE_BATCH_SIZE = 32
 ENHANCE_DETECT_EVERY = 2
 ENHANCE_TEMPORAL_BLEND = 0.85
 ENHANCE_DEFLICKER = 15
+ENHANCE_UPSCALE = 2  # ffmpeg lanczos 2x upscale after GFPGAN (512x768 → 1024x1536)
 
 # -- Output / Server ----------------------------------------------------------
 OUTPUT_DIR = Path("/workspace/outputs")

@@ -52,6 +52,7 @@ class GFPGANEnhanceActor:
         win_r: int = 3,
         temporal_blend: float = cfg.ENHANCE_TEMPORAL_BLEND,
         deflicker: int = cfg.ENHANCE_DEFLICKER,
+        upscale: int = cfg.ENHANCE_UPSCALE,
     ) -> dict:
         t0 = time.perf_counter()
 
@@ -69,6 +70,7 @@ class GFPGANEnhanceActor:
             win_r=win_r,
             temporal_blend=temporal_blend,
             deflicker=deflicker,
+            upscale=upscale,
         )
 
         elapsed = time.perf_counter() - t0

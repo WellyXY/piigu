@@ -110,7 +110,7 @@ def gaussian_temporal_blend(enhanced, win_r=3, temporal_blend=0.85):
 
 def process_video(enhancer, input_path, output_path,
                   blend=0.85, batch_size=32, detect_every=2,
-                  win_r=3, temporal_blend=0.85, deflicker=15):
+                  win_r=3, temporal_blend=0.85, deflicker=15, upscale=2):
 
     cap = cv2.VideoCapture(input_path)
     if not cap.isOpened():
@@ -224,7 +224,11 @@ def process_video(enhancer, input_path, output_path,
         blended_crop = cv2.addWeighted(enhanced[ei], blend, orig_crop, 1.0 - blend, 0)
         face_map[fidx] = (blended_crop, inv_aff, inv_mask)
 
-    vf = [f'deflicker=size={deflicker}:mode=am'] if deflicker > 0 else []
+    vf = []
+    if upscale and upscale > 1:
+        vf.append(f'scale=iw*{upscale}:ih*{upscale}:flags=lanczos')
+    if deflicker > 0:
+        vf.append(f'deflicker=size={deflicker}:mode=am')
     cmd = [
         'ffmpeg', '-y', '-loglevel', 'error',
         '-f', 'rawvideo', '-pix_fmt', 'bgr24',
