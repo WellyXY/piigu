@@ -25,7 +25,7 @@ try:
     import bitsandbytes as bnb
     _BNB_AVAILABLE = True
     logger.info("bitsandbytes available — Gemma will be quantized to int8")
-except ImportError:
+except Exception:
     _BNB_AVAILABLE = False
     logger.info("bitsandbytes not available — Gemma loaded in bf16")
 

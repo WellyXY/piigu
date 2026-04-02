@@ -123,6 +123,9 @@ class LTXInferenceActor:
     ) -> dict:
         t0 = time.perf_counter()
 
+        # Apply per-position weight override if defined
+        position_w = cfg.POSITION_LORA_WEIGHTS.get(position, position_w)
+
         self._ensure_position(position, position_w)
 
         images = [ImageConditioningInput(path=image_path, frame_idx=0, strength=image_strength)]

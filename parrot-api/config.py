@@ -20,10 +20,15 @@ POSITION_LORAS = {
     "blow_job":        str(LORA_DIR / "blow_job.safetensors"),
     "cowgirl":         str(LORA_DIR / "cowgirl.safetensors"),
     "doggy":           str(LORA_DIR / "doggy.safetensors"),
+    "handjob":         str(LORA_DIR / "handjob.safetensors"),
+    "lift_clothes":    str(LORA_DIR / "lift_clothes.safetensors"),
     "masturbation":    str(LORA_DIR / "masturbation.safetensors"),
     "missionary":      str(LORA_DIR / "missionary.safetensors"),
     "reverse_cowgirl": str(LORA_DIR / "reverse_cowgirl.safetensors"),
 }
+
+# Per-position LoRA weight overrides (default: DEFAULT_LORA_WEIGHTS["position"])
+POSITION_LORA_WEIGHTS: dict[str, float] = {}
 
 # -- Default inference params (matching run_batch_3lora.sh) --------------------
 DEFAULT_HEIGHT = 768
