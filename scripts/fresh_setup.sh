@@ -44,14 +44,17 @@ pip install -q av accelerate gfpgan opencv-python-headless imageio imageio-ffmpe
     soundfile bitsandbytes safetensors einops "transformers==4.52.1" sentencepiece protobuf \
     "ray[default]" fastapi "uvicorn[standard]" pydantic
 
-# Auto-detect CUDA version and install matching torch ecosystem
-CUDA_MAJOR=$(python3 -c "import torch; print(torch.version.cuda.split('.')[0])" 2>/dev/null || echo "12")
+# Auto-detect CUDA version from nvidia-smi (actual driver, not torch compile-time)
+CUDA_MAJOR=$(nvidia-smi | grep -oP "CUDA Version: \K[0-9]+" | head -1 || echo "12")
 if [ "$CUDA_MAJOR" = "13" ]; then
     CU_TAG="cu130"
     NVCU_LIB=/usr/local/lib/python3.11/dist-packages/nvidia/cu13/lib
 else
     CU_TAG="cu124"
     NVCU_LIB=/usr/local/lib/python3.11/dist-packages/nvidia/cu12/lib
+    echo "  CUDA 12 detected — installing torch 2.6.0+cu124"
+    pip install -q --no-deps torch==2.6.0+cu124 \
+        --index-url https://download.pytorch.org/whl/cu124
 fi
 echo "  CUDA major=$CUDA_MAJOR → installing torch ${CU_TAG}"
 pip install -q --no-deps \
