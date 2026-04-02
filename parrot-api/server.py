@@ -119,9 +119,9 @@ async def generate(req: GenerateRequest):
     global _last_enhance_ran
     try:
         async with _inference_sem:
-            # Free GFPGAN's PyTorch memory reserve before inference — only if enhance
-            # actually ran last time (skip when no-op to avoid ~15s empty_cache overhead)
-            if gfpgan_actor is not None and _last_enhance_ran:
+            # Always free GFPGAN's PyTorch cached VRAM before inference.
+            # GFPGAN idles at ~27GB cached; releasing it prevents OOM during LTX spatial upsampler.
+            if gfpgan_actor is not None:
                 await asyncio.to_thread(ray.get, gfpgan_actor.free_cache.remote())
                 _last_enhance_ran = False
 
