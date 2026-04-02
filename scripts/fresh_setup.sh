@@ -16,7 +16,8 @@
 #        root@<HOST>:/workspace/models/loras/
 # =============================================================
 
-set -euo pipefail
+set -eo pipefail
+export LD_LIBRARY_PATH="${LD_LIBRARY_PATH:-}"
 
 HF_TOKEN="${1:?Usage: bash fresh_setup.sh <HF_TOKEN>}"
 
@@ -43,18 +44,28 @@ pip install -q av accelerate gfpgan opencv-python-headless imageio imageio-ffmpe
     soundfile bitsandbytes safetensors einops "transformers==4.52.1" sentencepiece protobuf \
     "ray[default]" fastapi "uvicorn[standard]" pydantic
 
-# Pin torch ecosystem versions to match cu130 builds (avoids ABI mismatch)
-pip install --no-deps \
-    "torchvision==0.26.0+cu130" \
-    "torchaudio==2.11.0+cu130" \
-    --index-url https://download.pytorch.org/whl/cu130
+# Auto-detect CUDA version and install matching torch ecosystem
+CUDA_MAJOR=$(python3 -c "import torch; print(torch.version.cuda.split('.')[0])" 2>/dev/null || echo "12")
+if [ "$CUDA_MAJOR" = "13" ]; then
+    CU_TAG="cu130"
+    NVCU_LIB=/usr/local/lib/python3.11/dist-packages/nvidia/cu13/lib
+else
+    CU_TAG="cu124"
+    NVCU_LIB=/usr/local/lib/python3.11/dist-packages/nvidia/cu12/lib
+fi
+echo "  CUDA major=$CUDA_MAJOR → installing torch ${CU_TAG}"
+pip install -q --no-deps \
+    "torchvision==0.26.0+${CU_TAG}" \
+    --index-url "https://download.pytorch.org/whl/${CU_TAG}" 2>/dev/null || \
+pip install -q --no-deps \
+    "torchvision==0.20.1+${CU_TAG}" \
+    --index-url "https://download.pytorch.org/whl/${CU_TAG}"
 
-# bitsandbytes on CUDA 13 needs libnvJitLink.so.13 — set LD_LIBRARY_PATH
-NVCU13_LIB=/usr/local/lib/python3.11/dist-packages/nvidia/cu13/lib
-if [ -d "$NVCU13_LIB" ]; then
-    echo "export LD_LIBRARY_PATH=${NVCU13_LIB}:\${LD_LIBRARY_PATH}" >> /root/.bashrc
-    export LD_LIBRARY_PATH="${NVCU13_LIB}:${LD_LIBRARY_PATH}"
-    echo "  cu13 lib path set"
+# Set LD_LIBRARY_PATH for bitsandbytes CUDA libs
+if [ -d "$NVCU_LIB" ]; then
+    echo "export LD_LIBRARY_PATH=${NVCU_LIB}:\${LD_LIBRARY_PATH:-}" >> /root/.bashrc
+    export LD_LIBRARY_PATH="${NVCU_LIB}:${LD_LIBRARY_PATH:-}"
+    echo "  CUDA lib path set: $NVCU_LIB"
 fi
 
 apt-get install -y -q ffmpeg
