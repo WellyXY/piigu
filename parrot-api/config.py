@@ -37,7 +37,7 @@ DEFAULT_SEED = 42
 DEFAULT_LORA_WEIGHTS = {
     "nsfw": 1.0,
     "motion": 0.7,
-    "position": 0.8,
+    "position": 1.2,
 }
 
 # -- Default V5 face enhancement params ---------------------------------------
