@@ -47,8 +47,8 @@ DEFAULT_FRAME_RATE = 25
 DEFAULT_SEED = 42
 
 DEFAULT_LORA_WEIGHTS = {
-    "nsfw": 1.0,
-    "motion": 0.7,
+    "nsfw": 0.0,
+    "motion": 0.0,
     "position": 1.2,
 }
 
