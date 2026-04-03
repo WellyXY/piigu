@@ -41,7 +41,9 @@ def _compute_lora_deltas(
     """Load a LoRA file and compute merged delta tensors keyed by transformer param name.
 
     For each layer: delta = B @ A * strength
-    Keys are stripped of the 'diffusion_model.' prefix to match transformer param names.
+
+    Matches LoRA layers to transformer params by suffix, so it works regardless of
+    whatever prefix X0Model uses in named_parameters() (e.g. 'model.', none, etc.).
     """
     # Load raw LoRA state dict
     raw_sd = {}
@@ -49,25 +51,51 @@ def _compute_lora_deltas(
         for k in f.keys():
             raw_sd[k] = f.get_tensor(k)
 
-    # Apply SDOps key renaming (strips 'diffusion_model.' prefix)
+    # Apply SDOps key renaming (strips 'diffusion_model.' prefix from LoRA keys)
     op = LTXV_LORA_COMFY_RENAMING_MAP
     renamed = {op.apply_to_key(k): v for k, v in raw_sd.items()}
 
-    # Compute delta for each transformer weight that has a matching LoRA
+    # Build suffix -> param_name index for O(1) suffix lookup.
+    # Handles cases where X0Model wraps the transformer in a submodule (adds a prefix).
+    # Maps every possible suffix of each param name to that param name.
+    # e.g. 'model.transformer_blocks.0.attn.to_k.weight'
+    #   -> {'model.transformer_blocks.0.attn.to_k.weight': ...,
+    #       'transformer_blocks.0.attn.to_k.weight': ...,
+    #       ...}
+    # We only need one level of stripping in practice (one wrapper module prefix).
+    suffix_index: dict[str, str] = {}
+    for pname in param_names:
+        if not pname.endswith(".weight"):
+            continue
+        suffix_index[pname] = pname  # exact
+        # Strip one prefix segment
+        dot = pname.find(".")
+        if dot != -1:
+            suffix_index[pname[dot + 1:]] = pname
+
+    # Collect LoRA base prefixes from keys ending in .lora_A.weight
+    lora_prefixes = [k[: -len(".lora_A.weight")] for k in renamed if k.endswith(".lora_A.weight")]
+
     deltas = {}
-    for param_name in param_names:
-        if not param_name.endswith(".weight"):
+    matched = 0
+    for lora_prefix in lora_prefixes:
+        key_a = f"{lora_prefix}.lora_A.weight"
+        key_b = f"{lora_prefix}.lora_B.weight"
+        if key_b not in renamed:
             continue
-        prefix = param_name[: -len(".weight")]
-        key_a = f"{prefix}.lora_A.weight"
-        key_b = f"{prefix}.lora_B.weight"
-        if key_a not in renamed or key_b not in renamed:
+
+        lora_weight_key = f"{lora_prefix}.weight"
+        param_name = suffix_index.get(lora_weight_key)
+        if param_name is None:
             continue
+
         A = renamed[key_a].to(device=device, dtype=dtype)
         B = renamed[key_b].to(device=device, dtype=dtype)
         deltas[param_name] = (B @ A) * strength
         del A, B
+        matched += 1
 
+    logger.info(f"_compute_lora_deltas: matched {matched}/{len(lora_prefixes)} LoRA layers from {lora_path}")
     return deltas
 
 
@@ -110,13 +138,14 @@ class PersistentDiffusionStage(DiffusionStage):
         self._param_dict = dict(self._cached_transformer.named_parameters())
         param_names = set(self._param_dict.keys())
 
-        # Pre-compute delta tensors for all position LoRAs
-        device = self._device
+        # Pre-compute delta tensors for all position LoRAs.
+        # Deltas are computed and stored on CPU to avoid VRAM OOM (transformer already ~43GB).
+        # They are moved to GPU only during apply/remove (add_ accepts cross-device tensors via .to()).
         dtype = self._dtype
         for pos_key, (lora_path, strength) in self._position_loras.items():
             logger.info(f"PersistentDiffusionStage: pre-computing LoRA deltas for {pos_key}...")
             self._position_deltas[pos_key] = _compute_lora_deltas(
-                lora_path, strength, param_names, device, dtype
+                lora_path, strength, param_names, torch.device("cpu"), dtype
             )
         if self._position_loras:
             logger.info(f"PersistentDiffusionStage: {len(self._position_loras)} position LoRA deltas loaded")
@@ -126,17 +155,21 @@ class PersistentDiffusionStage(DiffusionStage):
             self._apply_position_delta(self._initial_position_key)
 
     def _apply_position_delta(self, pos_key: tuple) -> None:
-        """Add position LoRA delta to transformer weights in-place."""
+        """Add position LoRA delta to transformer weights in-place.
+        Deltas are stored on CPU; moved to GPU temporarily for each add_."""
         deltas = self._position_deltas[pos_key]
+        device = self._device
         for param_name, delta in deltas.items():
-            self._param_dict[param_name].data.add_(delta)
+            self._param_dict[param_name].data.add_(delta.to(device))
         self._current_position_key = pos_key
 
     def _remove_position_delta(self, pos_key: tuple) -> None:
-        """Subtract position LoRA delta from transformer weights in-place."""
+        """Subtract position LoRA delta from transformer weights in-place.
+        Deltas are stored on CPU; moved to GPU temporarily for each sub_."""
         deltas = self._position_deltas[pos_key]
+        device = self._device
         for param_name, delta in deltas.items():
-            self._param_dict[param_name].data.sub_(delta)
+            self._param_dict[param_name].data.sub_(delta.to(device))
 
     def swap_position_lora(self, new_pos_key: tuple) -> None:
         """Hot-swap the position LoRA. ~2s vs ~28s rebuild."""

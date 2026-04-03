@@ -76,19 +76,21 @@ class LTXInferenceActor:
         self.pipeline.prompt_encoder = persistent_encoder
         self._persistent_encoder = persistent_encoder
 
-        # Build position_loras dict for all configured positions
+        # Build position_loras dict using per-position weight overrides (must match generate())
         position_loras = {
-            _pos_key(pos, default_pos_w): (path, default_pos_w)
+            _pos_key(pos, cfg.POSITION_LORA_WEIGHTS.get(pos, default_pos_w)):
+                (path, cfg.POSITION_LORA_WEIGHTS.get(pos, default_pos_w))
             for pos, path in cfg.POSITION_LORAS.items()
         }
 
+        default_pos_w_actual = cfg.POSITION_LORA_WEIGHTS.get(default_pos, default_pos_w)
         persistent_stage = PersistentDiffusionStage(
             checkpoint_path=cfg.DISTILLED_CHECKPOINT,
             dtype=self.dtype,
             device=self.device,
             loras=_base_loras(default_nsfw_w, default_motion_w),
             position_loras=position_loras,
-            initial_position_key=_pos_key(default_pos, default_pos_w),
+            initial_position_key=_pos_key(default_pos, default_pos_w_actual),
         )
         persistent_stage.warmup()
         self.pipeline.stage = persistent_stage
@@ -120,11 +122,24 @@ class LTXInferenceActor:
         motion_w: float = cfg.DEFAULT_LORA_WEIGHTS["motion"],
         position_w: float = cfg.DEFAULT_LORA_WEIGHTS["position"],
         image_strength: float = 0.9,
+        # server.py passes these names; accept both for compatibility
+        nsfw_weight: float | None = None,
+        motion_weight: float | None = None,
+        position_weight: float | None = None,
     ) -> dict:
         t0 = time.perf_counter()
 
-        # Apply per-position weight override if defined
-        position_w = cfg.POSITION_LORA_WEIGHTS.get(position, position_w)
+        # Accept _weight aliases from server.py
+        if nsfw_weight is not None:
+            nsfw_w = nsfw_weight
+        if motion_weight is not None:
+            motion_w = motion_weight
+        if position_weight is not None:
+            position_w = position_weight
+
+        # Apply per-position weight override if defined (only if no explicit override)
+        if position_weight is None:
+            position_w = cfg.POSITION_LORA_WEIGHTS.get(position, position_w)
 
         self._ensure_position(position, position_w)
 
