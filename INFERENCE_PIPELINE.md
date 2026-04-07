@@ -1,6 +1,6 @@
 # Piigu — 推理 Pipeline、LoRA 策略與 Prompt 設計
 
-> 最後更新：2026-04-03
+> 最後更新：2026-04-07
 
 ---
 
@@ -9,63 +9,113 @@
 ```
 Transformer（43GB，常駐 VRAM）
     │
-    ├── 第一層：Base LoRA（啟動時永久 fuse 進 transformer）
-    │     ├── NSFW LoRA：LTX2_3_NSFW_furry_concat_v2.safetensors  weight=1.0
-    │     └── Motion LoRA：LTX23_NSFW_Motion.safetensors           weight=0.7
+    ├── 第一層：Base LoRA（啟動時 fuse 進 transformer，可 per-request 調權重）
+    │     ├── NSFW LoRA：LTX2_3_NSFW_furry_concat_v2.safetensors  預設 w=1.0
+    │     └── Motion LoRA：LTX23_NSFW_Motion.safetensors           預設 w=0.7
     │
     └── 第二層：Position LoRA（熱切換，in-place add/subtract）
-          ├── blow_job.safetensors         weight=1.2（較強）
-          ├── cowgirl.safetensors          weight=0.8
-          ├── doggy.safetensors            weight=0.8
-          ├── lift_clothes.safetensors     weight=1.5（自訓練，step 1500）
-          ├── masturbation.safetensors     weight=0.8
-          ├── missionary.safetensors       weight=0.8
-          └── reverse_cowgirl.safetensors  weight=0.8
+          ├── blow_job.safetensors         w=1.2（較強）
+          ├── cowgirl.safetensors          w=0.8
+          ├── doggy.safetensors            w=0.8
+          ├── handjob.safetensors          w=0.8（自訓練）
+          ├── lift_clothes.safetensors     w=0.6（自訓練，降低防 artifact）
+          ├── masturbation.safetensors     w=0.8
+          ├── missionary.safetensors       w=0.8
+          └── reverse_cowgirl.safetensors  w=0.8
 ```
 
 **各 LoRA 作用：**
-- **NSFW LoRA（1.0x）** — 增強明確的解剖學細節與顯式內容
-- **Motion LoRA（0.7x）** — 增加動態流暢度、推力強度、動作模糊
-- **Position LoRA（0.8-1.2x）** — 特定體位的姿態、視角、解剖定位
+- **NSFW LoRA（預設 1.0x）** — 增強明確的解剖學細節與顯式內容
+- **Motion LoRA（預設 0.7x）** — 增加動態流暢度、推力強度、動作模糊
+- **Position LoRA（0.6-1.2x）** — 特定體位的姿態、視角、解剖定位
 
 ---
 
-## 二、Position LoRA 熱切換機制
+## 二、LoRA 熱切換機制
 
 **關鍵檔案：** `parrot-api/persistent_pipeline.py`
 
+### 2a. Position LoRA 切換（預計算，~2s）
+
 **啟動時預計算（warmup，只做一次）：**
 ```python
-# 對所有 position LoRA，預先計算 delta tensor 並存在 CPU（不佔 VRAM）
-# Transformer 已佔用 ~56GB VRAM，delta 必須存 CPU 避免 OOM
+# 所有 position LoRA 的 delta tensor 預先計算並存在 CPU（不佔 VRAM）
 for pos_key, (lora_path, strength) in self._position_loras.items():
     self._position_deltas[pos_key] = _compute_lora_deltas(
         lora_path, strength, param_names, device=cpu, dtype=bfloat16
     )
-    # delta = (B @ A) * strength，每個 LoRA 約 300-500MB
+    # delta = (B @ A) * strength，每個 LoRA 約 300-500MB on CPU
 ```
 
 **切換時（~2秒）：**
 ```python
-# 減去舊的 delta（CPU tensor 移到 GPU 做 sub_）
+# 減去舊 delta → 加上新 delta（CPU→GPU transfer + in-place 加減）
 for param_name, delta in old_deltas.items():
     self._param_dict[param_name].data.sub_(delta.to(device))
-
-# 加上新的 delta（CPU tensor 移到 GPU 做 add_）
 for param_name, delta in new_deltas.items():
     self._param_dict[param_name].data.add_(delta.to(device))
 ```
 
-**為什麼這樣快：** 不從磁碟讀 LoRA，不重建 transformer，只做 CPU→GPU transfer + in-place 加減法（約 100-400ms overhead）。
+### 2b. Base LoRA 權重調整（on-demand，~3-5s/per LoRA）
 
-**Key matching 機制（2026-04-03 修復）：**
-- LoRA 檔案的 key 格式（After LTXV_LORA_COMFY_RENAMING_MAP）：`transformer_blocks.0.attn1.to_k.lora_A.weight`
-- `_compute_lora_deltas` 使用 suffix index 匹配，不受 X0Model `named_parameters()` 的 wrapper prefix 影響
+Base LoRA（nsfw、motion）的 delta **不在 warmup 時預計算**（否則 B@A 展開後約 48GB+23GB = ~71GB CPU RAM）。改為 on-demand：當請求的 weight 與當前值差距 > 0.0001 時才觸發。
+
+```python
+def swap_base_loras(self, weights: dict[str, float]) -> None:
+    for name, new_w in weights.items():
+        current_w = self._current_base_weights.get(name, 0.0)
+        if abs(new_w - current_w) < 1e-4:
+            continue  # 相同則跳過，零額外耗時
+        # 載入 LoRA 檔案，計算 net delta = (new_w - current_w) × (B @ A)
+        # 應用到 transformer，釋放中間 tensor
+        net_deltas = _compute_lora_deltas(lora_path, net_strength, ...)
+        for param_name, delta in net_deltas.items():
+            self._param_dict[param_name].data.add_(delta.to(device))
+        del net_deltas  # 立即釋放，不持久存儲
+```
+
+**為什麼這樣設計：**
+- 預計算 base LoRA deltas 會消耗 ~71GB CPU RAM（B@A 展開後 = 全 weight matrix 大小）
+- On-demand 載入時 peak RAM 僅 LoRA 檔案大小（nsfw=2.3GB, motion=1.1GB）
+- 大部分請求使用預設權重 → 直接跳過，和之前一樣快
+
+**Key matching 機制：**
+- `_compute_lora_deltas` 使用 suffix index 匹配，不受 X0Model prefix 影響
 - 從 LoRA 端出發查詢 param，而非從 param 端查詢 LoRA
 
 ---
 
-## 三、Prompt 策略
+## 三、Per-Request LoRA 權重控制（2026-04-07）
+
+所有三個 LoRA 的權重都可在每次請求中個別指定：
+
+```json
+POST /v1/generate
+{
+  "position": "lift_clothes",
+  "nsfw_weight": 0.8,       // 選填，0.0~2.0，預設 1.0
+  "motion_weight": 0.5,     // 選填，0.0~2.0，預設 0.7
+  "position_weight": 0.6    // 選填，0.0~2.0，預設依 position 而定
+}
+```
+
+**資料流：**
+```
+API Request (nsfw_weight, motion_weight, position_weight)
+  → GenerateRequest model 驗證（ge=0.0, le=2.0）
+  → create_job() 存入 Redis job hash
+  → gpu_worker._parse_weight() 解析（None/"" → None）
+  → engine.generate() → POST /generate payload
+  → ltx_actor.generate()
+      → _ensure_base_loras(nsfw_w, motion_w)  ← swap if changed
+      → _ensure_position(position, position_w) ← swap if changed
+```
+
+**前端 UI：** 提供三個滑桿，選中 position 時自動顯示該 position 的預設值。
+
+---
+
+## 四、Prompt 策略
 
 **使用者的 prompt 欄位無效，永遠使用硬編碼的 DEFAULT_PROMPTS。**
 
@@ -83,24 +133,26 @@ Audio Description 邏輯：
 
 ---
 
-## 四、推理流程
+## 五、推理流程
 
 ```
-Client Request（image + position）
+Client Request（image + position [+ nsfw_weight, motion_weight, position_weight]）
       │
       ▼
 parrot-service（Railway）
-  image 下載 / base64 解碼 → 存為 .webp
-  prompt = DEFAULT_PROMPTS[position]
+  image 下載 → 存為 .webp
+  prompt = DEFAULT_PROMPTS[position]（用戶傳的 prompt 欄位被忽略）
   audio = custom wrapped 或 DEFAULT_AUDIO[position]
       │
-      ▼ Redis queue
-pod（RunPod H100）
-  Gemma-3 12B int8（常駐 VRAM）→ text_embeddings
-  LTX-2.3 22B Distilled
-  + NSFW LoRA（fused, 1.0）
-  + Motion LoRA（fused, 0.7）
-  + Position LoRA（hot-swap, 0.8-1.2）
+      ▼ Redis queue（含 weight 欄位）
+pod（RunPod H100）gpu_worker
+      │
+      ▼ POST /generate（含 nsfw_weight, motion_weight, position_weight）
+pod 推理 server（parrot-api）
+  swap_base_loras(nsfw_w, motion_w)   ← on-demand，相同 weight 則跳過
+  swap_position_lora(pos_key)         ← 預計算 delta，~2s
+  Gemma-3 12B int8（常駐）→ text_embeddings
+  LTX-2.3 22B Distilled 推理
       │
       ▼
   512×768 × 249f @ 25fps（raw）
@@ -117,17 +169,20 @@ pod（RunPod H100）
 
 ---
 
-## 五、各 Position LoRA 權重
+## 六、各 Position LoRA 預設權重
 
-| Position | LoRA 檔案 | 權重 | 備注 |
+| Position | LoRA 檔案 | 預設權重 | 備注 |
 |----------|----------|------|------|
 | blow_job | blow_job.safetensors | **1.2** | 強調喉嚨深度與嘴部細節 |
 | cowgirl | cowgirl.safetensors | 0.8 | 女性主導視角 |
 | doggy | doggy.safetensors | 0.8 | 後入視角 |
-| lift_clothes | lift_clothes.safetensors | **1.5** | 自訓練 LoRA，掀衣露胸動作；step 1500 checkpoint |
+| handjob | handjob.safetensors | 0.8 | 自訓練 LoRA，手部撫摸動作 |
+| lift_clothes | lift_clothes.safetensors | **0.6** | 自訓練 LoRA，降低防乳頭 artifact |
 | masturbation | masturbation.safetensors | 0.8 | 自慰動作 |
 | missionary | missionary.safetensors | 0.8 | 正面傳教士視角 |
 | reverse_cowgirl | reverse_cowgirl.safetensors | 0.8 | 反騎視角 |
+
+> 所有預設值可在每次請求時透過 `position_weight` 欄位覆蓋（0.0~2.0）。
 
 ---
 

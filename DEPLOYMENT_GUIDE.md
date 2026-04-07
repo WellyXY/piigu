@@ -1,6 +1,6 @@
 # Parrot API — 部署、配置與運行策略
 
-> 最後更新：2026-04-03
+> 最後更新：2026-04-07
 
 ---
 
@@ -9,7 +9,7 @@
 | 操作 | 指令 |
 |------|------|
 | **啟動 Server** | `nohup /workspace/parrot-api/start_server.sh > /workspace/logs/server.log 2>&1 &` |
-| **啟動 Worker** | `nohup /workspace/parrot-service/start_worker.sh > /workspace/logs/worker.log 2>&1 &` |
+| **啟動 Worker** | `setsid bash /workspace/parrot-service/start_worker.sh > /workspace/worker.log 2>&1 &` |
 | **確認就緒** | `curl http://localhost:8000/status` |
 | **監看日誌** | `tail -f /workspace/logs/server.log` |
 | **停止 Server** | `pkill -f server.py` |
@@ -81,7 +81,7 @@ mkdir -p /workspace/logs /workspace/outputs
 
 # 確認 network volume 上的模型都在
 ls /workspace/models/ltx23/        # 應有 2 個 .safetensors
-ls /workspace/models/loras/        # 應有 9 個 .safetensors（含 lift_clothes）
+ls /workspace/models/loras/        # 應有 10 個 .safetensors（含 lift_clothes、handjob）
 ls /workspace/gemma_configs/       # 應有 Gemma 分片
 ls /workspace/GFPGANv1.4.pth      # 應存在
 ```
@@ -141,7 +141,7 @@ curl http://localhost:8000/status
 | Position LoRA delta 預計算（8 個，CPU） | 1-2min |
 | **合計** | **~6-7min** |
 
-> **注意：** Delta 計算移至 CPU（避免 VRAM OOM），warmup 時間較長但只做一次。
+> **注意：** Base LoRA（nsfw/motion）的 delta **不在** warmup 預計算（B@A 展開後約 71GB CPU RAM，會 OOM）。改為 on-demand 載入，首次 weight 變更時才觸發（~3-5s）。大部分請求使用預設值→直接跳過，無額外耗時。
 
 ---
 
@@ -160,10 +160,18 @@ exec python3 parrot-api/server.py
 
 ```bash
 #!/bin/bash
-export LD_LIBRARY_PATH=/usr/local/lib/python3.11/dist-packages/nvidia/cu13/lib:$LD_LIBRARY_PATH
+set -a
+source /workspace/parrot-service/.env
+set +a
+NVCU12=/usr/local/lib/python3.11/dist-packages/nvidia
+for d in nvjitlink cusparse cusparselt cublas cudnn cufft curand cusolver cuda_runtime; do
+    [ -d "${NVCU12}/${d}/lib" ] && export LD_LIBRARY_PATH="${NVCU12}/${d}/lib:${LD_LIBRARY_PATH:-}"
+done
 cd /workspace/parrot-service
 exec python3 -m workers.gpu_worker --gpu_id 0
 ```
+
+> **注意：** 必須 source .env 才能讀到 REDIS_URL 等 credentials，否則 worker 會嘗試連 localhost:6379 失敗。
 
 **必須透過包裝器啟動**，原因：bitsandbytes 的 CUDA 13 動態庫（`libnvJitLink.so.13`）需要設定 `LD_LIBRARY_PATH`，否則 Gemma int8 量化會報錯。
 
@@ -202,7 +210,8 @@ exec python3 -m workers.gpu_worker --gpu_id 0
 │       ├── blow_job.safetensors                        ← 熱切換 w=1.2
 │       ├── cowgirl.safetensors                         ← 熱切換 w=0.8
 │       ├── doggy.safetensors                           ← 熱切換 w=0.8
-│       ├── lift_clothes.safetensors                    ← 熱切換 w=1.5（自訓練）
+│       ├── handjob.safetensors                         ← 熱切換 w=0.8（自訓練）
+│       ├── lift_clothes.safetensors                    ← 熱切換 w=0.6（自訓練）
 │       ├── masturbation.safetensors                    ← 熱切換 w=0.8
 │       ├── missionary.safetensors                      ← 熱切換 w=0.8
 │       └── reverse_cowgirl.safetensors                 ← 熱切換 w=0.8
@@ -532,7 +541,7 @@ export LD_LIBRARY_PATH=/usr/local/lib/python3.11/dist-packages/nvidia/cu13/lib:$
 |------|------|------|
 | `ModuleNotFoundError: ltx_pipelines` | LTX-2 repo 未安裝 | 重跑 fresh_setup.sh 步驟 [1/6] |
 | `CUDA out of memory` 在 GFPGAN | GFPGAN cache 未清 | server.py 已自動處理；手動：`gfpgan_actor.free_cache.remote()` |
-| `CUDA out of memory` 在 warmup delta 計算 | Transformer 已佔 56GB，delta 在 GPU 計算空間不夠 | `persistent_pipeline.py` 已改為 CPU 計算，重新 SCP 並重啟 |
+| `ray::OutOfMemoryError` 在 LTX actor init（144GB+ RAM） | 舊版預計算 nsfw+motion B@A delta，展開後 ~71GB CPU RAM | 已修復：base LoRA delta 改為 on-demand，不在 warmup 持久存儲 |
 | Position LoRA 完全沒效果（所有 position 輸出一樣） | `_compute_lora_deltas` key matching bug：param 端 key 與 LoRA 端 key prefix 不符 → 空 dict | 已修復（suffix index 方式匹配）；確認 log 有 `matched N/M LoRA layers` |
 | `got an unexpected keyword argument 'position_weight'` | `server.py` 傳 `position_weight`，但 `ltx_actor.generate()` 參數名是 `position_w` | 已修復：actor 同時接受兩種名字 |
 | `FileNotFoundError: tokenizer.model` | Gemma 下載失敗或 HF token 無效 | 以有效 token 重跑 fresh_setup.sh |
