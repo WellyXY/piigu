@@ -17,8 +17,8 @@ Transformer（43GB，常駐 VRAM）
           ├── blow_job.safetensors         w=1.2（較強）
           ├── cowgirl.safetensors          w=0.8
           ├── doggy.safetensors            w=0.8
-          ├── handjob.safetensors          w=0.8（自訓練）
-          ├── lift_clothes.safetensors     w=0.6（自訓練，降低防 artifact）
+          ├── handjob.safetensors          w=0.8（自訓練；nsfw/motion 前端預設 0.6）
+          ├── lift_clothes.safetensors     w=1.2（自訓練；nsfw/motion 前端預設 0.0）
           ├── masturbation.safetensors     w=0.8
           ├── missionary.safetensors       w=0.8
           └── reverse_cowgirl.safetensors  w=0.8
@@ -56,9 +56,9 @@ for param_name, delta in new_deltas.items():
     self._param_dict[param_name].data.add_(delta.to(device))
 ```
 
-### 2b. Base LoRA 權重調整（on-demand，~3-5s/per LoRA）
+### 2b. Base LoRA 權重調整（GPU layer-by-layer，~2-5s/per LoRA）
 
-Base LoRA（nsfw、motion）的 delta **不在 warmup 時預計算**（否則 B@A 展開後約 48GB+23GB = ~71GB CPU RAM）。改為 on-demand：當請求的 weight 與當前值差距 > 0.0001 時才觸發。
+Base LoRA（nsfw、motion）**不在 warmup 預計算**（B@A 展開後 ~71GB CPU RAM OOM）。改為 on-demand、**GPU layer-by-layer** 計算：
 
 ```python
 def swap_base_loras(self, weights: dict[str, float]) -> None:
@@ -66,18 +66,21 @@ def swap_base_loras(self, weights: dict[str, float]) -> None:
         current_w = self._current_base_weights.get(name, 0.0)
         if abs(new_w - current_w) < 1e-4:
             continue  # 相同則跳過，零額外耗時
-        # 載入 LoRA 檔案，計算 net delta = (new_w - current_w) × (B @ A)
-        # 應用到 transformer，釋放中間 tensor
-        net_deltas = _compute_lora_deltas(lora_path, net_strength, ...)
-        for param_name, delta in net_deltas.items():
-            self._param_dict[param_name].data.add_(delta.to(device))
-        del net_deltas  # 立即釋放，不持久存儲
+        # 每一層：load A+B → GPU → 計算 B@A*net_strength → apply → 立刻釋放
+        with safe_open(lora_path, framework="pt", device="cpu") as f:
+            for orig_prefix in lora_prefixes:
+                A = f.get_tensor(...).to(device=GPU, dtype=bfloat16)
+                B = f.get_tensor(...).to(device=GPU, dtype=bfloat16)
+                delta = (B @ A) * net_strength   # GPU 計算，幾毫秒/層
+                self._param_dict[param_name].data.add_(delta)
+                del A, B, delta                  # 峰值 VRAM 僅幾 MB
 ```
 
-**為什麼這樣設計：**
-- 預計算 base LoRA deltas 會消耗 ~71GB CPU RAM（B@A 展開後 = 全 weight matrix 大小）
-- On-demand 載入時 peak RAM 僅 LoRA 檔案大小（nsfw=2.3GB, motion=1.1GB）
-- 大部分請求使用預設權重 → 直接跳過，和之前一樣快
+**為什麼改成 GPU layer-by-layer：**
+- 舊方案（CPU B@A）：1152 層全部在 CPU 計算 → ~40-80s（實測 nsfw swap 增加 78s）
+- 新方案（GPU layer-by-layer）：每層 A、B 各幾 MB，B@A 在 GPU 完成 → 預估 ~2-5s
+- Peak VRAM 開銷：單層 A+B（~幾 MB），不影響 43GB transformer
+- 大部分請求使用預設權重 → 直接跳過，零額外耗時
 
 **Key matching 機制：**
 - `_compute_lora_deltas` 使用 suffix index 匹配，不受 X0Model prefix 影響
@@ -173,11 +176,11 @@ pod 推理 server（parrot-api）
 
 | Position | LoRA 檔案 | 預設權重 | 備注 |
 |----------|----------|------|------|
-| blow_job | blow_job.safetensors | **1.2** | 強調喉嚨深度與嘴部細節 |
+| blow_job | blow_job.safetensors | **1.2** | nsfw/motion 預設 0.6 |
 | cowgirl | cowgirl.safetensors | 0.8 | 女性主導視角 |
 | doggy | doggy.safetensors | 0.8 | 後入視角 |
-| handjob | handjob.safetensors | 0.8 | 自訓練 LoRA，手部撫摸動作 |
-| lift_clothes | lift_clothes.safetensors | **0.6** | 自訓練 LoRA，降低防乳頭 artifact |
+| handjob | handjob.safetensors | 0.8 | 自訓練 LoRA；nsfw/motion 預設 0.6 |
+| lift_clothes | lift_clothes.safetensors | **1.2** | 自訓練 LoRA；nsfw/motion 預設 0.0 |
 | masturbation | masturbation.safetensors | 0.8 | 自慰動作 |
 | missionary | missionary.safetensors | 0.8 | 正面傳教士視角 |
 | reverse_cowgirl | reverse_cowgirl.safetensors | 0.8 | 反騎視角 |
