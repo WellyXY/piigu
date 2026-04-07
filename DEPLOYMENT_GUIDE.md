@@ -1,6 +1,6 @@
 # Parrot API — 部署、配置與運行策略
 
-> 最後更新：2026-04-07
+> 最後更新：2026-04-07（swap_base_loras bug fix；tit_job；custom prompt；duration 15s）
 
 ---
 
@@ -141,7 +141,7 @@ curl http://localhost:8000/status
 | Position LoRA delta 預計算（8 個，CPU） | 1-2min |
 | **合計** | **~6-7min** |
 
-> **注意：** Base LoRA（nsfw/motion）的 delta **不在** warmup 預計算（B@A 展開後約 71GB CPU RAM，會 OOM）。改為 on-demand 載入，首次 weight 變更時才觸發（~3-5s）。大部分請求使用預設值→直接跳過，無額外耗時。
+> **注意：** Base LoRA（nsfw/motion）的 delta **不在** warmup 預計算（B@A 展開後約 71GB CPU RAM，會 OOM）。改為 on-demand GPU layer-by-layer 計算，weight 變更時才觸發（~1s/per LoRA，H100 實測）。大部分請求使用預設值→直接跳過，**零額外耗時**。
 
 ---
 
@@ -210,8 +210,8 @@ exec python3 -m workers.gpu_worker --gpu_id 0
 │       ├── blow_job.safetensors                        ← 熱切換 w=1.2
 │       ├── cowgirl.safetensors                         ← 熱切換 w=0.8
 │       ├── doggy.safetensors                           ← 熱切換 w=0.8
-│       ├── handjob.safetensors                         ← 熱切換 w=0.8（自訓練）
-│       ├── lift_clothes.safetensors                    ← 熱切換 w=0.6（自訓練）
+│       ├── handjob.safetensors                         ← 熱切換 w=0.6（自訓練；stack blow_job w=0.6）
+│       ├── lift_clothes.safetensors                    ← 熱切換 w=1.2（自訓練；nsfw/motion=0.0）
 │       ├── masturbation.safetensors                    ← 熱切換 w=0.8
 │       ├── missionary.safetensors                      ← 熱切換 w=0.8
 │       └── reverse_cowgirl.safetensors                 ← 熱切換 w=0.8
@@ -543,6 +543,7 @@ export LD_LIBRARY_PATH=/usr/local/lib/python3.11/dist-packages/nvidia/cu13/lib:$
 | `CUDA out of memory` 在 GFPGAN | GFPGAN cache 未清 | server.py 已自動處理；手動：`gfpgan_actor.free_cache.remote()` |
 | `ray::OutOfMemoryError` 在 LTX actor init（144GB+ RAM） | 舊版預計算 nsfw+motion B@A delta，展開後 ~71GB CPU RAM | 已修復：base LoRA delta 改為 on-demand，不在 warmup 持久存儲 |
 | Position LoRA 完全沒效果（所有 position 輸出一樣） | `_compute_lora_deltas` key matching bug：param 端 key 與 LoRA 端 key prefix 不符 → 空 dict | 已修復（suffix index 方式匹配）；確認 log 有 `matched N/M LoRA layers` |
+| Base LoRA（nsfw/motion）swap 後視覺無變化 | `swap_base_loras` 對合成 `.weight` key 呼叫 `op.apply_to_key`，rename map 不認識此格式，suffix_index 永遠 miss → delta=0（matched=1344 但實際 magnitude=0） | 已修復（2026-04-07）：先 rename 實際 `lora_A.weight` key，strip suffix 得 renamed_prefix，再查 suffix_index；magnitude 現為 ~11M |
 | `got an unexpected keyword argument 'position_weight'` | `server.py` 傳 `position_weight`，但 `ltx_actor.generate()` 參數名是 `position_w` | 已修復：actor 同時接受兩種名字 |
 | `FileNotFoundError: tokenizer.model` | Gemma 下載失敗或 HF token 無效 | 以有效 token 重跑 fresh_setup.sh |
 | `cannot import name 'rgb_to_grayscale'` | basicsr / torchvision 不相容 | fresh_setup.sh 已自動修補 |

@@ -14,14 +14,15 @@ Transformer（43GB，常駐 VRAM）
     │     └── Motion LoRA：LTX23_NSFW_Motion.safetensors           預設 w=0.7
     │
     └── 第二層：Position LoRA（熱切換，in-place add/subtract）
-          ├── blow_job.safetensors         w=1.2（較強）
+          ├── blow_job.safetensors         w=1.2（nsfw/motion 前端預設 1.0/0.7）
           ├── cowgirl.safetensors          w=0.8
           ├── doggy.safetensors            w=0.8
-          ├── handjob.safetensors          w=0.8（自訓練；nsfw/motion 前端預設 0.6）
-          ├── lift_clothes.safetensors     w=1.2（自訓練；nsfw/motion 前端預設 0.0）
+          ├── handjob.safetensors          w=0.6（自訓練；+ stacked blow_job w=0.6）
+          ├── lift_clothes.safetensors     w=1.2（自訓練；nsfw/motion 前端預設 0.0/0.0）
           ├── masturbation.safetensors     w=0.8
           ├── missionary.safetensors       w=0.8
-          └── reverse_cowgirl.safetensors  w=0.8
+          ├── reverse_cowgirl.safetensors  w=0.8
+          └── tit_job                      w=0.0（無 position LoRA，使用 handjob prompt）
 ```
 
 **各 LoRA 作用：**
@@ -40,55 +41,93 @@ Transformer（43GB，常駐 VRAM）
 **啟動時預計算（warmup，只做一次）：**
 ```python
 # 所有 position LoRA 的 delta tensor 預先計算並存在 CPU（不佔 VRAM）
+# strength=1.0 儲存，apply 時再 scale（支援任意 weight）
 for pos_key, (lora_path, strength) in self._position_loras.items():
-    self._position_deltas[pos_key] = _compute_lora_deltas(
-        lora_path, strength, param_names, device=cpu, dtype=bfloat16
+    self._position_deltas[pos_name] = _compute_lora_deltas(
+        lora_path, 1.0, param_names, device=cpu, dtype=bfloat16
     )
-    # delta = (B @ A) * strength，每個 LoRA 約 300-500MB on CPU
+    # 每個 LoRA 約 300-500MB on CPU，magnitude ~1M+
 ```
 
 **切換時（~2秒）：**
 ```python
 # 減去舊 delta → 加上新 delta（CPU→GPU transfer + in-place 加減）
 for param_name, delta in old_deltas.items():
-    self._param_dict[param_name].data.sub_(delta.to(device))
+    self._param_dict[param_name].data.sub_(delta.to(device) * old_strength)
 for param_name, delta in new_deltas.items():
-    self._param_dict[param_name].data.add_(delta.to(device))
+    self._param_dict[param_name].data.add_(delta.to(device) * new_strength)
 ```
 
-### 2b. Base LoRA 權重調整（GPU layer-by-layer，~2-5s/per LoRA）
+### 2b. Base LoRA 權重調整（GPU layer-by-layer，~1s/per swap）
 
 Base LoRA（nsfw、motion）**不在 warmup 預計算**（B@A 展開後 ~71GB CPU RAM OOM）。改為 on-demand、**GPU layer-by-layer** 計算：
 
 ```python
 def swap_base_loras(self, weights: dict[str, float]) -> None:
-    for name, new_w in weights.items():
-        current_w = self._current_base_weights.get(name, 0.0)
-        if abs(new_w - current_w) < 1e-4:
-            continue  # 相同則跳過，零額外耗時
+    # GPU layer-by-layer: ~1s 以內（H100 實測）
+    with safe_open(lora_path, framework="pt", device="cpu") as f:
+        # 先建 renamed_prefix → orig_prefix map（用實際 lora_A key 重命名）
+        prefix_map = {}
+        for k in all_keys:
+            if k.endswith(".lora_A.weight"):
+                orig_pfx = k[:-len(".lora_A.weight")]
+                renamed_key = op.apply_to_key(k)
+                renamed_pfx = renamed_key[:-len(".lora_A.weight")]
+                prefix_map[renamed_pfx] = orig_pfx
         # 每一層：load A+B → GPU → 計算 B@A*net_strength → apply → 立刻釋放
-        with safe_open(lora_path, framework="pt", device="cpu") as f:
-            for orig_prefix in lora_prefixes:
-                A = f.get_tensor(...).to(device=GPU, dtype=bfloat16)
-                B = f.get_tensor(...).to(device=GPU, dtype=bfloat16)
-                delta = (B @ A) * net_strength   # GPU 計算，幾毫秒/層
-                self._param_dict[param_name].data.add_(delta)
-                del A, B, delta                  # 峰值 VRAM 僅幾 MB
+        for renamed_prefix, orig_prefix in prefix_map.items():
+            lora_weight_key = f"{renamed_prefix}.weight"
+            param_name = suffix_index.get(lora_weight_key)
+            if param_name is None:
+                continue
+            A = f.get_tensor(f"{orig_prefix}.lora_A.weight").to(device=GPU, dtype=bfloat16)
+            B = f.get_tensor(f"{orig_prefix}.lora_B.weight").to(device=GPU, dtype=bfloat16)
+            delta = (B @ A) * net_strength   # GPU 計算，幾毫秒/層
+            self._param_dict[param_name].data.add_(delta)
+            del A, B, delta                  # 峰值 VRAM 僅幾 MB
 ```
 
-**為什麼改成 GPU layer-by-layer：**
-- 舊方案（CPU B@A）：1152 層全部在 CPU 計算 → ~40-80s（實測 nsfw swap 增加 78s）
-- 新方案（GPU layer-by-layer）：每層 A、B 各幾 MB，B@A 在 GPU 完成 → 預估 ~2-5s
-- Peak VRAM 開銷：單層 A+B（~幾 MB），不影響 43GB transformer
-- 大部分請求使用預設權重 → 直接跳過，零額外耗時
+**關鍵：Key matching 必須從 renamed lora_A key 推導 prefix**
+- ❌ 舊方法：`op.apply_to_key(f"{orig_prefix}.weight")` — rename map 只認含 `.lora_A.weight` 的完整 key，對合成 `.weight` key 無效，導致 delta=0（silent bug）
+- ✅ 正確方法：先 rename 實際 `lora_A.weight` key，strip suffix 得 renamed_prefix，再查 suffix_index
 
-**Key matching 機制：**
-- `_compute_lora_deltas` 使用 suffix index 匹配，不受 X0Model prefix 影響
-- 從 LoRA 端出發查詢 param，而非從 param 端查詢 LoRA
+**H100 實測：**
+- nsfw swap（1344 layers）：magnitude=11,159,614，~1s
+- motion swap（1248 layers）：magnitude=2,844,674，~1s
+- 兩個同時 swap：total overhead ~1s 以內
+- 大部分請求使用預設權重 → 直接跳過，**零額外耗時**
 
 ---
 
-## 三、Per-Request LoRA 權重控制（2026-04-07）
+## 三、Stacked Position LoRA（handjob 特殊）
+
+handjob 同時疊加兩個 position LoRA：
+
+```python
+# config.py
+POSITION_SECONDARY: dict[str, tuple[str, float]] = {
+    "handjob": ("blow_job", 0.6),
+}
+```
+
+```python
+# ltx_actor.py
+def _ensure_position(self, position: str, position_w: float) -> None:
+    key = _pos_key(position, position_w)          # ("handjob", 0.6)
+    secondary = cfg.POSITION_SECONDARY.get(position)
+    if secondary:
+        sec_name, sec_w = secondary
+        sec_key = _pos_key(sec_name, sec_w)        # ("blow_job", 0.6)
+        self._persistent_stage.ensure_loras(key, sec_key)
+    else:
+        self._persistent_stage.ensure_loras(key, None)
+```
+
+`ensure_loras` 管理 primary + secondary 的正確 add/subtract 順序，避免重複疊加。
+
+---
+
+## 四、Per-Request LoRA 權重控制
 
 所有三個 LoRA 的權重都可在每次請求中個別指定：
 
@@ -96,9 +135,9 @@ def swap_base_loras(self, weights: dict[str, float]) -> None:
 POST /v1/generate
 {
   "position": "lift_clothes",
-  "nsfw_weight": 0.8,       // 選填，0.0~2.0，預設 1.0
-  "motion_weight": 0.5,     // 選填，0.0~2.0，預設 0.7
-  "position_weight": 0.6    // 選填，0.0~2.0，預設依 position 而定
+  "nsfw_weight": 0.8,       // 選填，0.0~2.0，預設依 position
+  "motion_weight": 0.5,     // 選填，0.0~2.0，預設依 position
+  "position_weight": 0.6    // 選填，0.0~2.0，預設依 position
 }
 ```
 
@@ -110,41 +149,53 @@ API Request (nsfw_weight, motion_weight, position_weight)
   → gpu_worker._parse_weight() 解析（None/"" → None）
   → engine.generate() → POST /generate payload
   → ltx_actor.generate()
-      → _ensure_base_loras(nsfw_w, motion_w)  ← swap if changed
-      → _ensure_position(position, position_w) ← swap if changed
+      → _ensure_base_loras(nsfw_w, motion_w)  ← swap if changed（~1s overhead）
+      → _ensure_position(position, position_w) ← swap if changed（~2s overhead）
 ```
 
 **前端 UI：** 提供三個滑桿，選中 position 時自動顯示該 position 的預設值。
 
 ---
 
-## 四、Prompt 策略
+## 五、Prompt 策略
 
-**使用者的 prompt 欄位無效，永遠使用硬編碼的 DEFAULT_PROMPTS。**
+**預設行為：** 使用 `DEFAULT_PROMPTS[position]` 硬編碼 prompt。
+
+**自訂 Prompt（2026-04-07 新增）：**
+```json
+POST /v1/generate
+{
+  "prompt": "your custom scene description",
+  ...
+}
+```
+- `prompt` 非空 → 使用自訂 prompt
+- `prompt` 為空字串或未傳 → fallback 到 `DEFAULT_PROMPTS[position]`
 
 ```python
 # inference_engine.py
-effective_prompt = DEFAULT_PROMPTS.get(position, position.replace("_", " "))
-if include_audio and effective_audio:
-    payload["audio_description"] = effective_audio
+effective_prompt = prompt.strip() if prompt and prompt.strip() \
+    else DEFAULT_PROMPTS.get(position, position.replace("_", " "))
 ```
 
-Audio Description 邏輯：
+前端有「Custom Prompt」toggle（預設關閉），開啟後出現 textarea。
+
+Audio Description 邏輯（不受 prompt 影響）：
 - `include_audio=false` → 不附加任何音效描述
 - `include_audio=true` + 用戶有寫 → 包裝成標準格式後附加
 - `include_audio=true` + 用戶沒寫 → 使用 `DEFAULT_AUDIO[position]`
 
 ---
 
-## 五、推理流程
+## 六、推理流程
 
 ```
-Client Request（image + position [+ nsfw_weight, motion_weight, position_weight]）
+Client Request（image + position [+ nsfw_weight, motion_weight, position_weight, prompt]）
       │
       ▼
 parrot-service（Railway）
   image 下載 → 存為 .webp
-  prompt = DEFAULT_PROMPTS[position]（用戶傳的 prompt 欄位被忽略）
+  prompt = custom 或 DEFAULT_PROMPTS[position]
   audio = custom wrapped 或 DEFAULT_AUDIO[position]
       │
       ▼ Redis queue（含 weight 欄位）
@@ -152,8 +203,8 @@ pod（RunPod H100）gpu_worker
       │
       ▼ POST /generate（含 nsfw_weight, motion_weight, position_weight）
 pod 推理 server（parrot-api）
-  swap_base_loras(nsfw_w, motion_w)   ← on-demand，相同 weight 則跳過
-  swap_position_lora(pos_key)         ← 預計算 delta，~2s
+  swap_base_loras(nsfw_w, motion_w)   ← on-demand，相同 weight 則跳過（~1s）
+  ensure_loras(pos_key, sec_key)      ← 預計算 delta，~2s
   Gemma-3 12B int8（常駐）→ text_embeddings
   LTX-2.3 22B Distilled 推理
       │
@@ -172,24 +223,25 @@ pod 推理 server（parrot-api）
 
 ---
 
-## 六、各 Position LoRA 預設權重
+## 七、各 Position 預設值
 
-| Position | LoRA 檔案 | 預設權重 | 備注 |
-|----------|----------|------|------|
-| blow_job | blow_job.safetensors | **1.2** | nsfw/motion 預設 0.6 |
-| cowgirl | cowgirl.safetensors | 0.8 | 女性主導視角 |
-| doggy | doggy.safetensors | 0.8 | 後入視角 |
-| handjob | handjob.safetensors | 0.8 | 自訓練 LoRA；nsfw/motion 預設 0.6 |
-| lift_clothes | lift_clothes.safetensors | **1.2** | 自訓練 LoRA；nsfw/motion 預設 0.0 |
-| masturbation | masturbation.safetensors | 0.8 | 自慰動作 |
-| missionary | missionary.safetensors | 0.8 | 正面傳教士視角 |
-| reverse_cowgirl | reverse_cowgirl.safetensors | 0.8 | 反騎視角 |
+| Position | LoRA 檔案 | 預設 pos_w | nsfw 預設 | motion 預設 | 備注 |
+|----------|----------|----------|---------|-----------|------|
+| blow_job | blow_job.safetensors | **1.2** | 1.0 | 0.7 | |
+| cowgirl | cowgirl.safetensors | 0.8 | 1.0 | 0.7 | |
+| doggy | doggy.safetensors | 0.8 | 1.0 | 0.7 | |
+| handjob | handjob.safetensors | **0.6** | 1.0 | 0.7 | 自訓練；同時 stack blow_job w=0.6 |
+| lift_clothes | lift_clothes.safetensors | **1.2** | **0.0** | **0.0** | 自訓練 |
+| masturbation | masturbation.safetensors | 0.8 | 1.0 | 0.7 | |
+| missionary | missionary.safetensors | 0.8 | 1.0 | 0.7 | |
+| reverse_cowgirl | reverse_cowgirl.safetensors | 0.8 | 1.0 | 0.7 | |
+| tit_job | （無） | **0.0** | 1.0 | 0.7 | 無 position LoRA；用 handjob prompt |
 
-> 所有預設值可在每次請求時透過 `position_weight` 欄位覆蓋（0.0~2.0）。
+> 所有預設值可在每次請求時透過對應 weight 欄位覆蓋（0.0~2.0）。
 
 ---
 
-## 六、推理參數
+## 八、推理參數
 
 ```python
 # ltx_actor.py：實際傳入 pipeline 的參數
@@ -198,7 +250,7 @@ pipeline(
     seed=42,                     # 可由請求覆蓋
     height=768,                  # 直式 portrait
     width=512,
-    num_frames=249,              # 10s @ 25fps
+    num_frames=249,              # 5s=121 / 10s=249 / 15s=377（8n+1）
     frame_rate=25,
     images=[
         ImageConditioningInput(
@@ -211,9 +263,11 @@ pipeline(
 )
 ```
 
+Duration 支援範圍：**5s – 15s**（前端滑桿 + API 均驗證）
+
 ---
 
-## 七、GFPGAN 後處理參數
+## 九、GFPGAN 後處理參數
 
 ```python
 # config.py
