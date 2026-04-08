@@ -1,6 +1,6 @@
 # Piigu — 推理 Pipeline、LoRA 策略與 Prompt 設計
 
-> 最後更新：2026-04-08（blow_job_v2/dildo/boobs_play 部署；training params 問題記錄；blow_job trigger word 修正）
+> 最後更新：2026-04-08（dildo/boobs_play symlink 問題；MooseFS quota 繞過方式；config 部署在 /root/）
 
 ---
 
@@ -319,3 +319,20 @@ max_train_steps: 1500              # 原來 1000 → 改 1500
 - 必須用 **DEV** 模型訓練（`ltx-2.3-22b-dev.safetensors`）
 - 訓練資料結構：`{name}/latents/*.pt` + `{name}/conditions/*.pt`
 - 產出 `.safetensors` 後部署到 `/workspace/models/loras/` 並重啟 server
+
+### dildo / boobs_play Symlink 問題（新 pod 必讀）
+
+訓練完成後，這兩個 LoRA 的 `.safetensors` 是存在**舊 pod 的 `/root/`**（非 /workspace），然後在 /workspace/models/loras/ 建 symlink 指向它。換 pod 後 `/root/` 清空，symlink 斷掉。
+
+**正確部署方式（下次訓練後）：**
+```bash
+# 訓練輸出直接存到 /workspace（而非 /root）
+# 或訓練完立即複製到 /workspace/models/loras/
+cp /root/dildo_v2_output/checkpoints/lora_weights_step_01500.safetensors \
+   /workspace/models/loras/dildo.safetensors   # 實際檔案，不是 symlink
+```
+
+**目前狀態（2026-04-08）：**
+- dildo/boobs_play 已從 `/root/config.py` 移除（server 不加載）
+- 換 pod 後 server 啟動時會 crash，因為 symlink 斷掉
+- 等重新訓練完成後，複製為實際檔案，再加回 config.py

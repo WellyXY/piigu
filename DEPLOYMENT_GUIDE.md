@@ -1,6 +1,6 @@
 # Parrot API — 部署、配置與運行策略
 
-> 最後更新：2026-04-08（dildo/boobs_play LoRA 部署；blow_job_v2 切換；POSITION_SECONDARY；OOM/Ray zombie 排查）
+> 最後更新：2026-04-08（MooseFS quota 無法寫入 /workspace；PYTHONPATH=/root 繞過；symlink 問題；fresh_setup 補充）
 
 ---
 
@@ -8,12 +8,11 @@
 
 | 操作 | 指令 |
 |------|------|
-| **啟動 Server** | `nohup /workspace/parrot-api/start_server.sh > /workspace/logs/server.log 2>&1 &` |
-| **啟動 Worker** | `setsid bash /workspace/parrot-service/start_worker.sh > /workspace/worker.log 2>&1 &` |
+| **啟動 Server** | 見下方 Step 5（需 PYTHONPATH=/root 繞過 MooseFS quota） |
 | **確認就緒** | `curl http://localhost:8000/status` |
-| **監看日誌** | `tail -f /workspace/logs/server.log` |
-| **停止 Server** | `pkill -f server.py` |
-| **完整重啟** | `pkill -f server.py; sleep 2; nohup /workspace/parrot-api/start_server.sh > /workspace/logs/server.log 2>&1 &` |
+| **監看日誌** | `tail -f /root/server.log` |
+| **停止 Server** | `pkill -9 -f 'server.py\|ray'` |
+| **完整重啟** | `pkill -9 -f 'ray\|server.py'; sleep 3; bash /root/start.sh` |
 
 ---
 
@@ -102,11 +101,82 @@ pip install -q -r /workspace/parrot-service/requirements.txt
 
 ---
 
+### Step 4.6 — 修復 MooseFS Quota 問題（新節點必做）
+
+> **⚠️ 重要：** MooseFS 對 `/workspace` 有 chunk-level quota，任何嘗試在 `/workspace` 建立或覆寫檔案的操作都會得到 `OSError: [Errno 122] Disk quota exceeded`，即使磁碟有 87TB 空間。這不是磁碟空間問題，是 MooseFS inode/chunk 配額。
+
+**解法：把需要修改的設定檔放在 `/root/`（ephemeral，不受 quota），用 `PYTHONPATH=/root` 讓 Python 優先載入。**
+
+```bash
+# 1. 刪掉 /workspace/parrot-api/config.py（清空版或 broken symlink）
+rm /workspace/parrot-api/config.py
+
+# 2. 建立修改後的 config.py 到 /root/
+# （從本機 scp 過去，或在 pod 上直接建立）
+scp -P <PORT> -i ~/.ssh/id_ed25519 \
+  "/Users/welly/Parrot API/parrot-api/config.py" \
+  root@<HOST>:/root/config.py
+# 注意：如果新 pod 有 dildo/boobs_play symlink 斷掉，
+# 必須先從 config.py 移除這兩個 entry（見下方 symlink 問題）
+
+# 3. 建立啟動腳本 /root/start.sh（繞過 /workspace quota）
+cat > /root/start.sh << 'EOF'
+#!/bin/bash
+NVCU12=/usr/local/lib/python3.11/dist-packages/nvidia
+LD_PATH=''
+for d in nvjitlink cusparse cusparselt cublas cudnn cufft curand cusolver cuda_runtime; do
+  [ -d "$NVCU12/$d/lib" ] && LD_PATH="$NVCU12/$d/lib:$LD_PATH"
+done
+export LD_LIBRARY_PATH="$LD_PATH"
+export PYTHONPATH="/root"
+
+if [ -f /workspace/parrot-service/.env ]; then
+  set -a; source /workspace/parrot-service/.env; set +a
+  nohup bash /workspace/parrot-service/start_worker.sh >> /root/gpu_worker.log 2>&1 &
+fi
+
+nohup python3 /workspace/parrot-api/server.py > /root/server.log 2>&1 &
+echo "Server PID: $!"
+EOF
+chmod +x /root/start.sh
+```
+
+**dildo / boobs_play Symlink 問題（新 pod）：**
+
+這兩個 LoRA 的 `.safetensors` 是指向舊 pod `/root/` 的 symlink，換 pod 後會斷：
+```bash
+# 確認是否斷掉
+ls -la /workspace/models/loras/dildo.safetensors
+ls -la /workspace/models/loras/boobs_play.safetensors
+# 如果顯示 -> /root/xxx，且目標不存在 → 需要從 config.py 移除
+```
+
+暫時從 `/root/config.py` 移除這兩個 entry，等重新訓練完再加回來。
+
+---
+
 ### Step 5 — 啟動
 
 ```bash
-nohup bash /workspace/start_server.sh > /workspace/logs/server.log 2>&1 &
-nohup bash /workspace/parrot-service/start_worker.sh > /workspace/logs/worker.log 2>&1 &
+bash /root/start.sh
+```
+
+如果 `/root/start.sh` 尚未建立（見 Step 4.6），直接用：
+
+```bash
+NVCU12=/usr/local/lib/python3.11/dist-packages/nvidia
+LD_PATH=''
+for d in nvjitlink cusparse cusparselt cublas cudnn cufft curand cusolver cuda_runtime; do
+  [ -d "$NVCU12/$d/lib" ] && LD_PATH="$NVCU12/$d/lib:$LD_PATH"
+done
+export LD_LIBRARY_PATH="$LD_PATH"
+export PYTHONPATH="/root"
+if [ -f /workspace/parrot-service/.env ]; then
+  set -a; source /workspace/parrot-service/.env; set +a
+  nohup bash /workspace/parrot-service/start_worker.sh >> /root/gpu_worker.log 2>&1 &
+fi
+nohup python3 /workspace/parrot-api/server.py > /root/server.log 2>&1 &
+echo "Server PID: $!"
 ```
 
 ---
@@ -114,8 +184,8 @@ nohup bash /workspace/parrot-service/start_worker.sh > /workspace/logs/worker.lo
 ### Step 6 — 驗證就緒
 
 ```bash
-# 監看啟動日誌（約 60-90 秒載入模型）
-tail -f /workspace/logs/server.log
+# 監看啟動日誌（log 在 /root/，不是 /workspace/logs/）
+tail -f /root/server.log
 
 # 確認狀態
 curl http://localhost:8000/status
@@ -566,3 +636,8 @@ export LD_LIBRARY_PATH=/usr/local/lib/python3.11/dist-packages/nvidia/cu13/lib:$
 | `pkill -f server.py` 後 VRAM 不降 | Ray worker zombie 進程仍佔 VRAM（`nvidia-smi` 無進程但顯示使用中）| `ps aux \| grep -E 'python\|ray'` → `kill -9 <所有 PID>` → 等 VRAM 降至 &lt;100MB 再重啟 |
 | Server 停在 VRAM=~57GB 不繼續載入 | 上次推理 OOM 的殘留分配，Ray actor 卡住 | 同上：完整 kill 所有 Python/Ray 進程，VRAM 歸零後重啟 |
 | LoRA 視覺無效果（blow_job/dildo/boobs_play） | 訓練時 `first_frame_conditioning_p=0.35`，但推理永遠用 I2V（image_strength=0.9），參數不匹配 | 以正確參數重新訓練：`first_frame_conditioning_p=0.5`、`adamw8bit`、`1500 steps` |
+| `OSError: [Errno 122] Disk quota exceeded` 寫入 /workspace | MooseFS inode/chunk quota（與磁碟空間無關，即使有 87TB 可用）| 所有寫入改到 `/root/`；`rm` 可用；`cp`/`dd`/`python open('w')` 均失敗 |
+| `FileNotFoundError: /workspace/models/loras/dildo.safetensors` | 換新 pod 後，symlink 指向舊 pod 的 `/root/dildo_v2_output/` 路徑，目標消失 | 從 `/root/config.py` 移除 dildo/boobs_play entry；等重訓後補回 |
+| `ModuleNotFoundError: No module named 'config'` | `PYTHONPATH` 未設定 + `/workspace/parrot-api/config.py` 被刪除 | 確認 `/root/config.py` 存在且 `PYTHONPATH=/root` 有 export，再重啟 |
+| `torchaudio` ABI 不相容（`undefined symbol: torch_library_impl`） | 換 pod/環境後 torchaudio 版本與 torch 版本不符（如 torchaudio 2.11 + torch 2.7）| `pip install torchaudio==X.Y.Z+cuXXX --index-url ...`（版本必須與 torch 完全一致） |
+| fresh_setup.sh 中途失敗（`E: Unable to locate package ffmpeg`） | 部分 pod 的 apt 不含 ffmpeg，但 apt-get update 後通常能裝 | `apt-get update -qq && apt-get install -y ffmpeg` |
