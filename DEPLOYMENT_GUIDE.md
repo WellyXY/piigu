@@ -1,6 +1,6 @@
 # Parrot API — 部署、配置與運行策略
 
-> 最後更新：2026-04-07（swap_base_loras bug fix；tit_job；custom prompt；duration 15s）
+> 最後更新：2026-04-08（dildo/boobs_play LoRA 部署；blow_job_v2 切換；POSITION_SECONDARY；OOM/Ray zombie 排查）
 
 ---
 
@@ -81,7 +81,7 @@ mkdir -p /workspace/logs /workspace/outputs
 
 # 確認 network volume 上的模型都在
 ls /workspace/models/ltx23/        # 應有 2 個 .safetensors
-ls /workspace/models/loras/        # 應有 10 個 .safetensors（含 lift_clothes、handjob）
+ls /workspace/models/loras/        # 應有 12 個 .safetensors（含 blow_job_v2、lift_clothes、handjob、dildo、boobs_play）
 ls /workspace/gemma_configs/       # 應有 Gemma 分片
 ls /workspace/GFPGANv1.4.pth      # 應存在
 ```
@@ -207,14 +207,16 @@ exec python3 -m workers.gpu_worker --gpu_id 0
 │   └── loras/
 │       ├── LTX2_3_NSFW_furry_concat_v2.safetensors    ← 常駐 w=1.0
 │       ├── LTX23_NSFW_Motion.safetensors               ← 常駐 w=0.7
-│       ├── blow_job.safetensors                        ← 熱切換 w=1.2
-│       ├── cowgirl.safetensors                         ← 熱切換 w=0.8
-│       ├── doggy.safetensors                           ← 熱切換 w=0.8
-│       ├── handjob.safetensors                         ← 熱切換 w=0.6（自訓練；stack blow_job w=0.6）
-│       ├── lift_clothes.safetensors                    ← 熱切換 w=1.2（自訓練；nsfw/motion=0.0）
-│       ├── masturbation.safetensors                    ← 熱切換 w=0.8
-│       ├── missionary.safetensors                      ← 熱切換 w=0.8
-│       └── reverse_cowgirl.safetensors                 ← 熱切換 w=0.8
+│       ├── blow_job_v2.safetensors                     ← 熱切換 w=0.8（自訓練 v2；⚠️ 待 retrain）
+│       ├── boobs_play.safetensors                      ← 熱切換 w=0.8（自訓練 v2；⚠️ 待 retrain）
+│       ├── cowgirl.safetensors                         ← 熱切換 w=0.8  CivitAI
+│       ├── dildo.safetensors                           ← 熱切換 w=0.8（自訓練 v2；⚠️ 待 retrain）
+│       ├── doggy.safetensors                           ← 熱切換 w=0.8  CivitAI
+│       ├── handjob.safetensors                         ← 熱切換 w=0.8（自訓練；stack blow_job w=0.6）
+│       ├── lift_clothes.safetensors                    ← 熱切換 w=0.6（自訓練 v2；nsfw/motion 前端預設 0.0）
+│       ├── masturbation.safetensors                    ← 熱切換 w=0.8  CivitAI
+│       ├── missionary.safetensors                      ← 熱切換 w=0.8  CivitAI
+│       └── reverse_cowgirl.safetensors                 ← 熱切換 w=0.8  CivitAI
 │
 ├── gemma_configs/                 ← Gemma-3 12B 模型檔案
 ├── GFPGANv1.4.pth
@@ -242,19 +244,30 @@ DEFAULT_NUM_FRAMES = 249    # ~10s @ 25fps
 DEFAULT_FRAME_RATE = 25
 DEFAULT_SEED       = 42
 
-# 常駐 LoRA 權重
-NSFW_LORA_WEIGHT   = 1.0
-MOTION_LORA_WEIGHT = 0.7
+# 常駐 LoRA 預設權重
+DEFAULT_LORA_WEIGHTS = {
+    "nsfw":     1.0,
+    "motion":   0.7,
+    "position": 1.2,
+}
 
 # Position LoRA 個別權重覆蓋
 POSITION_LORA_WEIGHTS = {
-    "blow_job":        1.2,
+    "blow_job":        0.8,   # ⚠️ 待 retrain（training params mismatch）
     "cowgirl":         0.8,
     "doggy":           0.8,
-    "lift_clothes":    1.5,
+    "handjob":         0.8,
+    "lift_clothes":    0.6,
     "masturbation":    0.8,
     "missionary":      0.8,
     "reverse_cowgirl": 0.8,
+    "dildo":           0.8,   # ⚠️ 待 retrain
+    "boobs_play":      0.8,   # ⚠️ 待 retrain
+}
+
+# 疊加 Position LoRA（handjob 同時 stack blow_job）
+POSITION_SECONDARY = {
+    "handjob": ("blow_job", 0.6),
 }
 
 # GFPGAN V5 增強參數
@@ -550,3 +563,6 @@ export LD_LIBRARY_PATH=/usr/local/lib/python3.11/dist-packages/nvidia/cu13/lib:$
 | Port 8000 被佔用 | 舊 server 未停 | `lsof -i :8000` → `kill -9 <PID>` |
 | `libnvJitLink.so.13 not found` | LD_LIBRARY_PATH 未設 | 使用 `/workspace/start_server.sh` 啟動，不要直接 `python3 parrot-api/server.py` |
 | Worker 不拉 job | REDIS_URL 錯誤或 Redis 掛掉 | `redis-cli -h <host> ping` 確認回 PONG |
+| `pkill -f server.py` 後 VRAM 不降 | Ray worker zombie 進程仍佔 VRAM（`nvidia-smi` 無進程但顯示使用中）| `ps aux \| grep -E 'python\|ray'` → `kill -9 <所有 PID>` → 等 VRAM 降至 &lt;100MB 再重啟 |
+| Server 停在 VRAM=~57GB 不繼續載入 | 上次推理 OOM 的殘留分配，Ray actor 卡住 | 同上：完整 kill 所有 Python/Ray 進程，VRAM 歸零後重啟 |
+| LoRA 視覺無效果（blow_job/dildo/boobs_play） | 訓練時 `first_frame_conditioning_p=0.35`，但推理永遠用 I2V（image_strength=0.9），參數不匹配 | 以正確參數重新訓練：`first_frame_conditioning_p=0.5`、`adamw8bit`、`1500 steps` |

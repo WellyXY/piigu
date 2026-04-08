@@ -1,6 +1,6 @@
 # Piigu — 推理 Pipeline、LoRA 策略與 Prompt 設計
 
-> 最後更新：2026-04-07
+> 最後更新：2026-04-08（blow_job_v2/dildo/boobs_play 部署；training params 問題記錄；blow_job trigger word 修正）
 
 ---
 
@@ -14,15 +14,17 @@ Transformer（43GB，常駐 VRAM）
     │     └── Motion LoRA：LTX23_NSFW_Motion.safetensors           預設 w=0.7
     │
     └── 第二層：Position LoRA（熱切換，in-place add/subtract）
-          ├── blow_job.safetensors         w=1.2（nsfw/motion 前端預設 1.0/0.7）
-          ├── cowgirl.safetensors          w=0.8
-          ├── doggy.safetensors            w=0.8
-          ├── handjob.safetensors          w=0.6（自訓練；+ stacked blow_job w=0.6）
-          ├── lift_clothes.safetensors     w=1.2（自訓練；nsfw/motion 前端預設 0.0/0.0）
-          ├── masturbation.safetensors     w=0.8
-          ├── missionary.safetensors       w=0.8
-          ├── reverse_cowgirl.safetensors  w=0.8
-          └── tit_job                      w=0.0（無 position LoRA，使用 handjob prompt）
+          ├── blow_job_v2.safetensors      w=0.8  自訓練 v2（⚠️ 視覺無效，待 retrain）
+          ├── boobs_play.safetensors       w=0.8  自訓練 v2（⚠️ 視覺無效，待 retrain）
+          ├── cowgirl.safetensors          w=0.8  CivitAI（有效）
+          ├── dildo.safetensors            w=0.8  自訓練 v2（⚠️ 視覺無效，待 retrain）
+          ├── doggy.safetensors            w=0.8  CivitAI（有效）
+          ├── handjob.safetensors          w=0.8  自訓練 v2（有效；+ stacked blow_job w=0.6）
+          ├── lift_clothes.safetensors     w=0.6  自訓練 v2（有效；nsfw/motion 前端預設 0.0/0.0）
+          ├── masturbation.safetensors     w=0.8  CivitAI（有效）
+          ├── missionary.safetensors       w=0.8  CivitAI（有效）
+          ├── reverse_cowgirl.safetensors  w=0.8  CivitAI（有效）
+          └── tit_job                      w=0.0  無 position LoRA，使用 handjob prompt
 ```
 
 **各 LoRA 作用：**
@@ -227,14 +229,16 @@ pod 推理 server（parrot-api）
 
 | Position | LoRA 檔案 | 預設 pos_w | nsfw 預設 | motion 預設 | 備注 |
 |----------|----------|----------|---------|-----------|------|
-| blow_job | blow_job.safetensors | **1.2** | 1.0 | 0.7 | |
-| cowgirl | cowgirl.safetensors | 0.8 | 1.0 | 0.7 | |
-| doggy | doggy.safetensors | 0.8 | 1.0 | 0.7 | |
-| handjob | handjob.safetensors | **0.6** | 1.0 | 0.7 | 自訓練；同時 stack blow_job w=0.6 |
-| lift_clothes | lift_clothes.safetensors | **1.2** | **0.0** | **0.0** | 自訓練 |
-| masturbation | masturbation.safetensors | 0.8 | 1.0 | 0.7 | |
-| missionary | missionary.safetensors | 0.8 | 1.0 | 0.7 | |
-| reverse_cowgirl | reverse_cowgirl.safetensors | 0.8 | 1.0 | 0.7 | |
+| blow_job | blow_job_v2.safetensors | 0.8 | 1.0 | 0.7 | 自訓練 v2；⚠️ 視覺無效（training params mismatch，待 retrain） |
+| boobs_play | boobs_play.safetensors | 0.8 | 1.0 | 0.7 | 自訓練 v2；⚠️ 視覺無效（同上，待 retrain） |
+| cowgirl | cowgirl.safetensors | 0.8 | 1.0 | 0.7 | CivitAI；有效 |
+| dildo | dildo.safetensors | 0.8 | 1.0 | 0.7 | 自訓練 v2；⚠️ 視覺無效（同上，待 retrain） |
+| doggy | doggy.safetensors | 0.8 | 1.0 | 0.7 | CivitAI；有效 |
+| handjob | handjob.safetensors | 0.8 | 1.0 | 0.7 | 自訓練 v2；有效；同時 stack blow_job w=0.6 |
+| lift_clothes | lift_clothes.safetensors | **0.6** | **0.0** | **0.0** | 自訓練 v2；有效 |
+| masturbation | masturbation.safetensors | 0.8 | 1.0 | 0.7 | CivitAI；有效 |
+| missionary | missionary.safetensors | 0.8 | 1.0 | 0.7 | CivitAI；有效 |
+| reverse_cowgirl | reverse_cowgirl.safetensors | 0.8 | 1.0 | 0.7 | CivitAI；有效 |
 | tit_job | （無） | **0.0** | 1.0 | 0.7 | 無 position LoRA；用 handjob prompt |
 
 > 所有預設值可在每次請求時透過對應 weight 欄位覆蓋（0.0~2.0）。
@@ -277,3 +281,41 @@ ENHANCE_TEMPORAL_BLEND = 0.85   # 85% 時間平滑（防閃爍）
 ENHANCE_DEFLICKER      = 15     # FFmpeg deflicker 視窗大小
 ENHANCE_UPSCALE        = 2      # 2x Lanczos 放大（512×768 → 1024×1536）
 ```
+
+---
+
+## 十、已知問題與 LoRA Retrain 計畫
+
+### blow_job_v2 / dildo / boobs_play 視覺無效根因
+
+這三個 LoRA **數學上有被 apply**（delta magnitude 均 ~680k–890k，matched=1152/1152），但生成影片無對應動作。
+
+**根因：**
+
+| 參數 | 失敗的三個 | 有效的（cowgirl/handjob/lift_clothes） |
+|------|----------|--------------------------------------|
+| `first_frame_conditioning_p` | **0.35**（65% T2V, 35% I2V）| **0.5**（50/50 混合）|
+| `optimizer_type` | `adamw` | `adamw8bit` |
+| `steps` | `1000` | `1500` |
+| 推理模式 | I2V @ image_strength=0.9 | I2V @ image_strength=0.9 |
+
+訓練時以 T2V 為主（conditioning_p=0.35），但推理永遠以 I2V 條件化輸入圖片；LoRA 學到的 motion 特徵在 I2V 模式下不激活 → 無明顯動作。
+
+**注意：** blow_job 還有 trigger word 問題（已修復）：
+- 訓練 caption 結尾都是 `-- blow_job`
+- 舊 DEFAULT_PROMPTS 完全缺少此 trigger word（已於 2026-04-08 修復，commit 23143b4）
+
+### Retrain 計畫
+
+需以正確參數重新訓練：
+
+```yaml
+first_frame_conditioning_p: 0.5   # 原來 0.35 → 改 0.5
+optimizer_type: adamw8bit          # 原來 adamw → 改 adamw8bit
+max_train_steps: 1500              # 原來 1000 → 改 1500
+```
+
+訓練規則：
+- 必須用 **DEV** 模型訓練（`ltx-2.3-22b-dev.safetensors`）
+- 訓練資料結構：`{name}/latents/*.pt` + `{name}/conditions/*.pt`
+- 產出 `.safetensors` 後部署到 `/workspace/models/loras/` 並重啟 server
