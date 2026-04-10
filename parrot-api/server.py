@@ -35,6 +35,10 @@ class GenerateRequest(BaseModel):
     frame_rate: int = cfg.DEFAULT_FRAME_RATE
     seed: int = cfg.DEFAULT_SEED
     lora_weights: dict = Field(default_factory=lambda: dict(cfg.DEFAULT_LORA_WEIGHTS))
+    # Flat weight overrides (sent by inference_engine; take priority over lora_weights)
+    nsfw_weight: float | None = None
+    motion_weight: float | None = None
+    position_weight: float | None = None
     enhance: bool = True
     audio_description: str | None = Field(
         None, description="Optional Audio: section for dirty talk"
@@ -113,6 +117,10 @@ async def generate(req: GenerateRequest):
         full_prompt = f"{req.prompt} Audio: {req.audio_description}"
 
     lw = req.lora_weights
+    # Flat weight fields (from inference_engine) take priority over lora_weights dict
+    nsfw_w = req.nsfw_weight if req.nsfw_weight is not None else lw.get("nsfw", 1.0)
+    motion_w = req.motion_weight if req.motion_weight is not None else lw.get("motion", 0.7)
+    position_w = req.position_weight if req.position_weight is not None else lw.get("position", 0.8)
     _pending_tasks += 1
     t0 = time.perf_counter()
 
@@ -136,9 +144,9 @@ async def generate(req: GenerateRequest):
                     num_frames=req.num_frames,
                     frame_rate=req.frame_rate,
                     seed=req.seed,
-                    nsfw_w=lw.get("nsfw", 1.0),
-                    motion_w=lw.get("motion", 0.7),
-                    position_w=lw.get("position", 0.8),
+                    nsfw_w=nsfw_w,
+                    motion_w=motion_w,
+                    position_w=position_w,
                     image_strength=req.image_strength,
                 ),
             )
