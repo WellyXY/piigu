@@ -1,6 +1,6 @@
 # Parrot API — 部署、配置與運行策略
 
-> 最後更新：2026-04-10（切回 distilled checkpoint；移除 distill LoRA；inference_engine prompt 策略修正；DEFAULT_AUDIO 新增 boobs_play/dildo）
+> 最後更新：2026-04-10（切回 distilled checkpoint；移除 distill LoRA；inference_engine prompt 策略修正；DEFAULT_AUDIO 新增 boobs_play/dildo；deploy.sh 加入 transformers ALL_PARALLEL_STYLES patch；移除 PYTHONPATH=/root workaround）
 
 ---
 
@@ -8,11 +8,11 @@
 
 | 操作 | 指令 |
 |------|------|
-| **啟動 Server** | 見下方 Step 5（需 PYTHONPATH=/root 繞過 MooseFS quota） |
+| **啟動 Server** | 見 Step 5（`cd /workspace/parrot-api && nohup /workspace/venv/bin/python server.py > /workspace/parrot-api.log 2>&1 &`） |
 | **確認就緒** | `curl http://localhost:8000/status` |
-| **監看日誌** | `tail -f /root/server.log` |
+| **監看日誌** | `tail -f /workspace/parrot-api.log` |
 | **停止 Server** | `pkill -9 -f 'server.py\|ray'` |
-| **完整重啟** | `pkill -9 -f 'ray\|server.py'; sleep 3; bash /root/start.sh` |
+| **完整重啟** | `pkill -9 -f 'ray\|server.py'; sleep 3; cd /workspace/parrot-api && nohup /workspace/venv/bin/python server.py > /workspace/parrot-api.log 2>&1 &` |
 
 ---
 
@@ -49,35 +49,32 @@ git clone git@github.com:WellyXY/piigun.git /workspace/parrot-service
 
 ---
 
-### Step 3 — 安裝 Python 依賴（CUDA 12.x 節點）
+### Step 3 — 部署程式碼 + 建立 venv
+
+從**本機**執行 `deploy.sh`（`parrot-api/deploy.sh`）：
 
 ```bash
-# 一鍵安裝（模型已在 Network Volume，跳過下載）
-bash /workspace/fresh_setup.sh
-
-# 若 fresh_setup.sh 不在 workspace，先從本機 scp 過來：
-# scp -P <PORT> -i ~/.ssh/id_ed25519 "scripts/fresh_setup.sh" root@<HOST>:/workspace/fresh_setup.sh
+# 在本機 parrot-api/ 目錄下
+bash deploy.sh <PORT> <HOST_IP>
+# 例：bash deploy.sh 10574 91.199.227.82
 ```
 
-**注意（CUDA 12 特有）：**
-1. fresh_setup.sh 安裝完後需手動升級 torch：
-   ```bash
-   pip install torch==2.7.0+cu126 torchvision torchaudio --index-url https://download.pytorch.org/whl/cu126
-   ```
-2. patch ltx2_repo __init__.py（刪掉 a2vid import）：
-   ```bash
-   sed -i 's/^from ltx_pipelines.a2vid_two_stage/# &/' \
-     /workspace/ltx2_repo/packages/ltx-pipelines/src/ltx_pipelines/__init__.py
-   find /workspace/ltx2_repo -name '*.pyc' -path '*/ltx_pipelines/*' -delete
-   ```
+`deploy.sh` 會自動：
+1. SCP `config.py`, `server.py`, `actors/`, `persistent_pipeline.py` 等到 pod
+2. 在 pod 建立 `/workspace/venv`（`--system-site-packages`，保留 torch 2.4.1）
+3. 安裝 pip 依賴（requirements.txt + gfpgan/facexlib/basicsr/bitsandbytes + transformers 4.52.0 + ltx-core/ltx-pipelines）
+4. 套用以下 patches：
+   - **torchvision** `_meta_registrations` import 移除
+   - **basicsr** `functional_tensor` → `functional` 改名
+   - **patch_nms.py** torchvision NMS 修正
+   - **Gemma3 autocast** `torch.autocast` → `torch.amp.autocast`（torch 2.4.1 相容性）
+   - **transformers ALL_PARALLEL_STYLES**（4.52.0 + torch < 2.5 的 `None` bug 修正）
 
 ---
 
-### Step 4 — 建立目錄並驗證模型
+### Step 4 — 驗證模型
 
 ```bash
-mkdir -p /workspace/logs /workspace/outputs
-
 # 確認 network volume 上的模型都在
 ls /workspace/models/ltx23/        # 應有 2 個 .safetensors
 ls /workspace/models/loras/        # 應有 12 個 .safetensors（含 blow_job_v2、lift_clothes、handjob、dildo、boobs_play）
@@ -90,93 +87,25 @@ ls /workspace/GFPGANv1.4.pth      # 應存在
 ### Step 4.5 — 部署 Worker .env
 
 ```bash
-# 從本機 scp credentials 過去（不需重新查 Railway）
+# 從本機 scp credentials 過去
 scp -P <PORT> -i ~/.ssh/id_ed25519 \
   "/Users/welly/Parrot API/parrot-service.env" \
   root@<HOST>:/workspace/parrot-service/.env
-
-# 安裝 worker Python 依賴
-pip install -q -r /workspace/parrot-service/requirements.txt
 ```
-
----
-
-### Step 4.6 — 修復 MooseFS Quota 問題（新節點必做）
-
-> **⚠️ 重要：** MooseFS 對 `/workspace` 有 chunk-level quota，任何嘗試在 `/workspace` 建立或覆寫檔案的操作都會得到 `OSError: [Errno 122] Disk quota exceeded`，即使磁碟有 87TB 空間。這不是磁碟空間問題，是 MooseFS inode/chunk 配額。
-
-**解法：把需要修改的設定檔放在 `/root/`（ephemeral，不受 quota），用 `PYTHONPATH=/root` 讓 Python 優先載入。**
-
-```bash
-# 1. 刪掉 /workspace/parrot-api/config.py（清空版或 broken symlink）
-rm /workspace/parrot-api/config.py
-
-# 2. 建立修改後的 config.py 到 /root/
-# （從本機 scp 過去，或在 pod 上直接建立）
-scp -P <PORT> -i ~/.ssh/id_ed25519 \
-  "/Users/welly/Parrot API/parrot-api/config.py" \
-  root@<HOST>:/root/config.py
-# 注意：如果新 pod 有 dildo/boobs_play symlink 斷掉，
-# 必須先從 config.py 移除這兩個 entry（見下方 symlink 問題）
-
-# 3. 建立啟動腳本 /root/start.sh（繞過 /workspace quota）
-cat > /root/start.sh << 'EOF'
-#!/bin/bash
-NVCU12=/usr/local/lib/python3.11/dist-packages/nvidia
-LD_PATH=''
-for d in nvjitlink cusparse cusparselt cublas cudnn cufft curand cusolver cuda_runtime; do
-  [ -d "$NVCU12/$d/lib" ] && LD_PATH="$NVCU12/$d/lib:$LD_PATH"
-done
-export LD_LIBRARY_PATH="$LD_PATH"
-export PYTHONPATH="/root"
-
-if [ -f /workspace/parrot-service/.env ]; then
-  set -a; source /workspace/parrot-service/.env; set +a
-  nohup bash /workspace/parrot-service/start_worker.sh >> /root/gpu_worker.log 2>&1 &
-fi
-
-nohup python3 /workspace/parrot-api/server.py > /root/server.log 2>&1 &
-echo "Server PID: $!"
-EOF
-chmod +x /root/start.sh
-```
-
-**dildo / boobs_play Symlink 問題（新 pod）：**
-
-這兩個 LoRA 的 `.safetensors` 是指向舊 pod `/root/` 的 symlink，換 pod 後會斷：
-```bash
-# 確認是否斷掉
-ls -la /workspace/models/loras/dildo.safetensors
-ls -la /workspace/models/loras/boobs_play.safetensors
-# 如果顯示 -> /root/xxx，且目標不存在 → 需要從 config.py 移除
-```
-
-暫時從 `/root/config.py` 移除這兩個 entry，等重新訓練完再加回來。
 
 ---
 
 ### Step 5 — 啟動
 
 ```bash
-bash /root/start.sh
-```
+# 啟動 parrot-api server（log → /workspace/parrot-api.log）
+export LD_LIBRARY_PATH=/usr/local/lib/python3.11/dist-packages/nvidia/cu13/lib:$LD_LIBRARY_PATH
+cd /workspace/parrot-api
+nohup /workspace/venv/bin/python server.py > /workspace/parrot-api.log 2>&1 &
 
-如果 `/root/start.sh` 尚未建立（見 Step 4.6），直接用：
-
-```bash
-NVCU12=/usr/local/lib/python3.11/dist-packages/nvidia
-LD_PATH=''
-for d in nvjitlink cusparse cusparselt cublas cudnn cufft curand cusolver cuda_runtime; do
-  [ -d "$NVCU12/$d/lib" ] && LD_PATH="$NVCU12/$d/lib:$LD_PATH"
-done
-export LD_LIBRARY_PATH="$LD_PATH"
-export PYTHONPATH="/root"
-if [ -f /workspace/parrot-service/.env ]; then
-  set -a; source /workspace/parrot-service/.env; set +a
-  nohup bash /workspace/parrot-service/start_worker.sh >> /root/gpu_worker.log 2>&1 &
-fi
-nohup python3 /workspace/parrot-api/server.py > /root/server.log 2>&1 &
-echo "Server PID: $!"
+# 啟動 gpu_worker（等 server ready 後）
+set -a; source /workspace/parrot-service/.env; set +a
+nohup bash /workspace/parrot-service/start_worker.sh >> /workspace/worker.log 2>&1 &
 ```
 
 ---
@@ -184,10 +113,10 @@ echo "Server PID: $!"
 ### Step 6 — 驗證就緒
 
 ```bash
-# 監看啟動日誌（log 在 /root/，不是 /workspace/logs/）
-tail -f /root/server.log
+# 監看啟動日誌
+tail -f /workspace/parrot-api.log
 
-# 確認狀態
+# 確認狀態（server ready 後）
 curl http://localhost:8000/status
 ```
 
@@ -215,16 +144,17 @@ curl http://localhost:8000/status
 
 ---
 
-## 二、啟動腳本說明
+## 二、啟動說明
 
-### `parrot-api/start_server.sh`（在 piigu repo）
+### parrot-api server（手動啟動）
 
 ```bash
-#!/bin/bash
 export LD_LIBRARY_PATH=/usr/local/lib/python3.11/dist-packages/nvidia/cu13/lib:$LD_LIBRARY_PATH
-cd /workspace
-exec python3 parrot-api/server.py
+cd /workspace/parrot-api
+nohup /workspace/venv/bin/python server.py > /workspace/parrot-api.log 2>&1 &
 ```
+
+> **注意：** 使用 `/workspace/venv/bin/python`（venv 有 transformers 4.52.0 + patches），不要用系統 `python3`（系統版本缺少 gfpgan 等依賴）。
 
 ### `parrot-service/start_worker.sh`（在 piigun repo）
 

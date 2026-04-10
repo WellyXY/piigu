@@ -1,6 +1,6 @@
 # Piigu — 推理 Pipeline、LoRA 策略與 Prompt 設計
 
-> 最後更新：2026-04-08（dildo/boobs_play symlink 問題；MooseFS quota 繞過方式；config 部署在 /root/）
+> 最後更新：2026-04-10（per-request nsfw_w/motion_w 正式生效；swap_base_loras() 已接線；config 在 /workspace/parrot-api/config.py）
 
 ---
 
