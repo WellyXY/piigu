@@ -1,6 +1,6 @@
 # Parrot API — 部署、配置與運行策略
 
-> 最後更新：2026-04-08（MooseFS quota 無法寫入 /workspace；PYTHONPATH=/root 繞過；symlink 問題；fresh_setup 補充）
+> 最後更新：2026-04-10（切回 distilled checkpoint；移除 distill LoRA；inference_engine prompt 策略修正；DEFAULT_AUDIO 新增 boobs_play/dildo）
 
 ---
 
@@ -352,6 +352,46 @@ OUTPUT_DIR = Path("/workspace/outputs")
 HOST       = "0.0.0.0"
 PORT       = 8000
 ```
+
+---
+
+## 四-B、Inference Engine — Prompt 與 Dirty Talk 策略
+
+### `parrot-service/workers/inference_engine.py`
+
+#### Prompt 策略
+- **用戶有傳 prompt** → 直接使用用戶 prompt
+- **用戶沒傳 / 空字串** → 自動 fallback 到 `DEFAULT_PROMPTS[position]`
+
+```python
+effective_prompt = prompt.strip() if prompt and prompt.strip() \
+    else DEFAULT_PROMPTS.get(position, position.replace("_", " "))
+```
+
+> ⚠️ 舊版本（2026-04-10 之前）是 **永遠忽略用戶 prompt**，強制使用 DEFAULT_PROMPTS。已修正。
+
+#### Dirty Talk（Audio）策略
+- 前端開關 `include_audio=True` 時啟用
+- 用戶有填自訂文字 → 包在標準場景格式裡送出
+- 用戶沒填 → fallback 到 `DEFAULT_AUDIO[position]`
+
+```python
+if include_audio:
+    if audio_description.strip():
+        effective_audio = f'rhythmic bouncing sounds, ... saying : "{audio_description}" ...'
+    else:
+        effective_audio = DEFAULT_AUDIO.get(position, "")
+```
+
+**DEFAULT_AUDIO 涵蓋的 positions（10 個）：**
+`blow_job`, `cowgirl`, `doggy`, `handjob`, `lift_clothes`, `masturbation`, `missionary`, `reverse_cowgirl`, `boobs_play`, `dildo`
+
+> ⚠️ 舊版本缺少 `boobs_play` 和 `dildo`，導致這兩個 position 開啟 dirty talk 卻無音效。已修正。
+
+#### 當前 Checkpoint（2026-04-10）
+- **使用**：`ltx-2.3-22b-distilled.safetensors`（43GB）
+- **Base LoRA**：NSFW (w=1.0) + Motion (w=0.7)，**distill LoRA 已移除**
+- **Position LoRA**：10 個 position 熱切換（各自權重見 config.py）
 
 ---
 
