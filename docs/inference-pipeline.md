@@ -15,17 +15,9 @@ All components are persistent in VRAM — no model reloading between jobs.
 
 | File | Size | Format |
 |------|------|--------|
-| `ltx-2.3-22b-dev-q8-bf16.safetensors` | 43 GB | BF16 safetensors |
+| `ltx-2.3-22b-distilled.safetensors` | 43 GB | BF16 safetensors |
 
-**How it was built:**
-1. Download `unsloth/LTX-2.3-GGUF` → `ltx-2.3-22b-dev-Q8_0.gguf` (22 GB)
-2. Dequantize Q8_0 → BF16 via `/root/gguf_to_safetensors.py` (4,444 transformer tensors)
-3. Load GGUF to RAM → delete GGUF → save output (avoids MooseFS ~140 GB per-pod quota)
-4. Patch in non-transformer tensors from `ltx-2.3-22b-distilled.safetensors`:
-   - `vae.*` (170 tensors)
-   - `audio_vae.*` (102 tensors)
-   - `vocoder.*` (1,227 tensors)
-   - `text_embedding_projection.*` (4 tensors)
+**Official Lightricks distilled checkpoint** — includes all required components (transformer, VAE, audio_vae, vocoder, text_embedding_projection). No conversion needed.
 
 Config path: `/root/config.py` → `DEV_CHECKPOINT`
 
@@ -37,11 +29,12 @@ Config path: `/root/config.py` → `DEV_CHECKPOINT`
 
 | LoRA | Weight | Purpose |
 |------|--------|---------|
-| `ltx-2.3-22b-distilled-lora-384.safetensors` | 1.0 | Distilled LoRA — enables 7-step inference without ghosting |
-| `LTX2_3_NSFW_furry_concat_v2.safetensors` | 1.0 (default) | NSFW content |
-| `LTX23_NSFW_Motion.safetensors` | 0.7 (default) | Motion quality |
+| `LTX2_3_NSFW_furry_concat_v2.safetensors` | 1.0 (default, per-request adjustable) | NSFW content |
+| `LTX23_NSFW_Motion.safetensors` | 0.7 (default, per-request adjustable) | Motion quality |
 
-All three are fused via `fuse_loras.apply_loras()` at actor init. No disk access after startup.
+Both are fused at startup. Per-request weight changes (including 0.0) are applied via `swap_base_loras()` (~2-5s, skipped if unchanged). No disk access after startup.
+
+> Distill LoRA (`ltx-2.3-22b-distilled-lora-384.safetensors`) was removed — using distilled checkpoint which already has distillation baked in.
 
 ### Layer 2 — Position LoRAs (hot-swapped in VRAM, ~2s per swap)
 

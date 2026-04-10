@@ -5,7 +5,9 @@ from pathlib import Path
 # -- Model paths -------------------------------------------------------------
 MODEL_ROOT = Path("/workspace/models")
 
-DISTILLED_CHECKPOINT = str(MODEL_ROOT / "ltx23/ltx-2.3-22b-distilled.safetensors")
+DISTILLED_CHECKPOINT    = str(MODEL_ROOT / "ltx23/ltx-2.3-22b-distilled.safetensors")
+DEV_CHECKPOINT          = str(MODEL_ROOT / "ltx23/ltx-2.3-22b-distilled.safetensors")
+OFFICIAL_DISTILLED_LORA = "/root/models/ltx-2.3-22b-distilled-lora-384.safetensors"
 SPATIAL_UPSAMPLER = str(MODEL_ROOT / "ltx23/ltx-2.3-spatial-upscaler-x2-1.0.safetensors")
 GEMMA_ROOT = "/workspace/gemma_configs"
 GFPGAN_MODEL = "/workspace/GFPGANv1.4.pth"
@@ -25,8 +27,8 @@ POSITION_LORAS = {
     "masturbation":    str(LORA_DIR / "masturbation.safetensors"),
     "missionary":      str(LORA_DIR / "missionary.safetensors"),
     "reverse_cowgirl": str(LORA_DIR / "reverse_cowgirl.safetensors"),
-    "dildo":           str(LORA_DIR / "dildo.safetensors"),
-    "boobs_play":      str(LORA_DIR / "boobs_play.safetensors"),
+    "dildo":           "/root/loras/dildo.safetensors",
+    "boobs_play":      "/root/loras/boobs_play.safetensors",
 }
 
 # Per-position LoRA weight overrides (default: DEFAULT_LORA_WEIGHTS["position"])
