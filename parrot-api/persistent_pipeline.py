@@ -83,6 +83,12 @@ def _compute_lora_deltas(
         if param_name is None:
             continue
 
+        # Skip audio LoRA layers for position LoRAs — training without audio
+        # corrupts these weights, applying them destroys speech generation
+        if any(a in lora_prefix for a in ("audio_attn1", "audio_attn2", "audio_ff",
+               "audio_to_video_attn", "video_to_audio_attn")):
+            continue
+
         A = renamed[key_a].to(device=device, dtype=dtype)
         B = renamed[key_b].to(device=device, dtype=dtype)
         deltas[param_name] = (B @ A) * strength

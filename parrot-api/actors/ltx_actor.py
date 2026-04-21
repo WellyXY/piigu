@@ -1,8 +1,7 @@
 """Ray actor wrapping the LTX 2.3 DistilledPipeline with persistent transformer.
 
 The transformer (~43GB) stays in VRAM between calls.
-- nsfw + motion LoRAs are fused into the transformer at startup and can be rescaled
-  per-request (~2-5s) via swap_base_loras().
+- nsfw + motion LoRAs are fused into the transformer at startup (constant).
 - Position LoRA is hot-swapped in-place (~2s) instead of rebuilding from disk (~28s).
 """
 
@@ -35,7 +34,7 @@ def _pos_key(position: str, strength: float) -> tuple:
 
 
 def _base_loras(nsfw_w: float, motion_w: float) -> tuple[LoraPathStrengthAndSDOps, ...]:
-    """LoRAs fused into the base transformer at startup."""
+    """LoRAs that are always fused into the base transformer (constant)."""
     return (
         LoraPathStrengthAndSDOps(cfg.NSFW_LORA, nsfw_w, LTXV_LORA_COMFY_RENAMING_MAP),
         LoraPathStrengthAndSDOps(cfg.MOTION_LORA, motion_w, LTXV_LORA_COMFY_RENAMING_MAP),
@@ -60,7 +59,7 @@ class LTXInferenceActor:
         default_motion_w = cfg.DEFAULT_LORA_WEIGHTS["motion"]
 
         self.pipeline = DistilledPipeline(
-            distilled_checkpoint_path=cfg.DEV_CHECKPOINT,
+            distilled_checkpoint_path=cfg.DISTILLED_CHECKPOINT,
             gemma_root=cfg.GEMMA_ROOT,
             spatial_upsampler_path=cfg.SPATIAL_UPSAMPLER,
             loras=list(_base_loras(default_nsfw_w, default_motion_w)),
@@ -68,7 +67,7 @@ class LTXInferenceActor:
 
         # Patch prompt_encoder with persistent int8 version
         persistent_encoder = PersistentPromptEncoder(
-            cfg.DEV_CHECKPOINT,
+            cfg.DISTILLED_CHECKPOINT,
             cfg.GEMMA_ROOT,
             self.dtype,
             self.device,
@@ -86,14 +85,10 @@ class LTXInferenceActor:
 
         default_pos_w_actual = cfg.POSITION_LORA_WEIGHTS.get(default_pos, default_pos_w)
         persistent_stage = PersistentDiffusionStage(
-            checkpoint_path=cfg.DEV_CHECKPOINT,
+            checkpoint_path=cfg.DISTILLED_CHECKPOINT,
             dtype=self.dtype,
             device=self.device,
             loras=_base_loras(default_nsfw_w, default_motion_w),
-            scalable_loras={
-                "nsfw":   (cfg.NSFW_LORA, default_nsfw_w),
-                "motion": (cfg.MOTION_LORA, default_motion_w),
-            },
             position_loras=position_loras,
             initial_position_key=_pos_key(default_pos, default_pos_w_actual),
         )
@@ -127,6 +122,7 @@ class LTXInferenceActor:
         motion_w: float = cfg.DEFAULT_LORA_WEIGHTS["motion"],
         position_w: float = cfg.DEFAULT_LORA_WEIGHTS["position"],
         image_strength: float = 0.9,
+        enhance_prompt: bool = False,
         # server.py passes these names; accept both for compatibility
         nsfw_weight: float | None = None,
         motion_weight: float | None = None,
@@ -146,8 +142,6 @@ class LTXInferenceActor:
         if position_weight is None:
             position_w = cfg.POSITION_LORA_WEIGHTS.get(position, position_w)
 
-        # Rescale base LoRAs if per-request weights differ (~2-5s, skipped if unchanged)
-        self._persistent_stage.swap_base_loras({"nsfw": nsfw_w, "motion": motion_w})
         self._ensure_position(position, position_w)
 
         images = [ImageConditioningInput(path=image_path, frame_idx=0, strength=image_strength)]
@@ -167,6 +161,7 @@ class LTXInferenceActor:
                 frame_rate=frame_rate,
                 images=images,
                 tiling_config=tiling_config,
+                enhance_prompt=enhance_prompt,
             )
 
         with torch.inference_mode():

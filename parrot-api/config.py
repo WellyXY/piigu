@@ -23,11 +23,12 @@ POSITION_LORAS = {
     "cowgirl":         str(LORA_DIR / "cowgirl.safetensors"),
     "doggy":           str(LORA_DIR / "doggy.safetensors"),
     "handjob":         str(LORA_DIR / "handjob.safetensors"),
-    "lift_clothes":    str(LORA_DIR / "lift_clothes.safetensors"),
+    "lift_clothes":    str(LORA_DIR / "lift_clothes_v2.safetensors"),
     "masturbation":    str(LORA_DIR / "masturbation.safetensors"),
     "missionary":      str(LORA_DIR / "missionary.safetensors"),
     "reverse_cowgirl": str(LORA_DIR / "reverse_cowgirl.safetensors"),
-    # dildo / boobs_play: corrupted files (17MB, invalid safetensors) — re-enable after retrain
+    "dildo":           str(LORA_DIR / "dildo.safetensors"),
+    "boobs_play":      str(LORA_DIR / "boobs_play.safetensors"),
 }
 
 # Per-position LoRA weight overrides (default: DEFAULT_LORA_WEIGHTS["position"])
@@ -40,7 +41,9 @@ POSITION_LORA_WEIGHTS: dict[str, float] = {
     "masturbation":    0.8,
     "missionary":      0.8,
     "reverse_cowgirl": 0.8,
-    # dildo / boobs_play removed — corrupted files pending retrain
+    "dildo":           0.8,
+    "boobs_play":      0.8,
+    # dildo/boobs_play: v3 — dildo step1250, boobs_play step1000
 }
 
 # Secondary LoRA stacked on top of position LoRA for certain positions

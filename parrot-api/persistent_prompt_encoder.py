@@ -108,11 +108,13 @@ class PersistentPromptEncoder(PromptEncoder):
                 )
         yield self._cached_text_encoder
 
-        # After text encoding, clear bitsandbytes CxB (transformed weight cache).
-        # CxB is computed on first forward and cached persistently — ~15GB for 12B model.
-        # Clearing it after each use keeps Gemma at ~8GB instead of ~23GB during inference.
+        # After text encoding, free VRAM so spatial upsampler has enough contiguous memory.
         if _BNB_AVAILABLE:
+            # int8: clear CxB transformed-weight cache (~15GB), keeps int8 weights (~8GB)
             self._clear_bnb_forward_cache()
+        else:
+            # bf16: no CxB cache, but clear PyTorch allocator fragmentation
+            torch.cuda.empty_cache()
 
     def _clear_bnb_forward_cache(self) -> None:
         """Delete CxB/SB from each Linear8bitLt layer to free the transformed-weight cache."""

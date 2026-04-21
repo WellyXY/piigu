@@ -32,6 +32,9 @@ $SSH $HOST "
 set -e
 export LD_LIBRARY_PATH=/usr/local/lib/python3.11/dist-packages/nvidia/cu13/lib:\$LD_LIBRARY_PATH
 
+# System deps
+apt-get install -y ffmpeg -q 2>/dev/null || (apt-get update -q && apt-get install -y ffmpeg -q)
+
 # Create persistent venv in /workspace if not exists
 if [ ! -d /workspace/venv ]; then
   python -m venv /workspace/venv --system-site-packages
@@ -44,6 +47,13 @@ pip install -q opencv-python-headless gfpgan facexlib basicsr bitsandbytes --no-
 pip install -q 'transformers==4.52.0' || true
 pip install -q -e /workspace/ltx2_repo/packages/ltx-core \
                -e /workspace/ltx2_repo/packages/ltx-pipelines
+# Remove torch from venv — fall back to system torch 2.4.1+cu124 via --system-site-packages
+# (ltx packages may have upgraded torch; pip uninstall leaves stale dirs; use shutil)
+python3 -c "import shutil; [shutil.rmtree(p, ignore_errors=True) for p in [
+  '/workspace/venv/lib/python3.11/site-packages/torch',
+  '/workspace/venv/lib/python3.11/site-packages/torchvision',
+  '/workspace/venv/lib/python3.11/site-packages/torchaudio',
+]]" && echo 'torch removed from venv (using system 2.4.1)'
 
 # Patches
 TV='/usr/local/lib/python3.11/dist-packages/torchvision/__init__.py'
