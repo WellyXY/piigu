@@ -68,7 +68,7 @@ DEFAULT_LORA_WEIGHTS = {
 ENHANCE_BATCH_SIZE = 8  # reduced from 32 to keep activation VRAM peak ~5GB (bf16 Gemma + LTX leaves ~13GB headroom)
 ENHANCE_DETECT_EVERY = 2
 ENHANCE_TEMPORAL_BLEND = 0.85
-ENHANCE_DEFLICKER = 15
+ENHANCE_DEFLICKER = 25  # 15→25: stronger luma smoothing (keep DETECT_EVERY=2 to avoid stale bbox blur on motion)
 ENHANCE_UPSCALE = 2  # ffmpeg lanczos 2x upscale after GFPGAN (512x768 → 1024x1536)
 
 # -- Output / Server ----------------------------------------------------------
