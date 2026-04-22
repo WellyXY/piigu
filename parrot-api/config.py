@@ -65,7 +65,7 @@ DEFAULT_LORA_WEIGHTS = {
 }
 
 # -- Default V5 face enhancement params ---------------------------------------
-ENHANCE_BATCH_SIZE = 32
+ENHANCE_BATCH_SIZE = 8  # reduced from 32 to keep activation VRAM peak ~5GB (bf16 Gemma + LTX leaves ~13GB headroom)
 ENHANCE_DETECT_EVERY = 2
 ENHANCE_TEMPORAL_BLEND = 0.85
 ENHANCE_DEFLICKER = 15
