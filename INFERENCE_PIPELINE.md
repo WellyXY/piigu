@@ -211,22 +211,22 @@ pod 推理 server（parrot-api）
   swap_base_loras(nsfw_w, motion_w)   ← on-demand，相同 weight 則跳過（~1s）；跳過 audio 層
   ensure_loras(pos_key, sec_key)      ← 預計算 delta，~2s；跳過 audio 層
   Gemma-3 12B bf16（常駐，eager attention）→ text_embeddings
-  LTX-2.3 22B Distilled 推理（16-20s）
+  LTX-2.3 22B Distilled 推理（25-27s @ 640×960）
       │
       ▼
-  512×768 × 249f @ 25fps（raw）
+  640×960 × 249f @ 25fps（raw，default；可透過 API 的 height/width override）
       │
-      ▼ （enhance=true，~13-15s）
+      ▼ （enhance=true，~14-20s）
   GFPGAN V1.4 人臉增強（batch=8，避 activation OOM）
   + Temporal blending（blend=0.85）
   + FFmpeg deflicker（size=25）
   + FFmpeg 2x Lanczos 放大
       │
       ▼
-  1024×1536 MP4 → 上傳 R2 → callback
+  1280×1920 MP4 → 上傳 R2 → callback
 ```
 
-**單 job 時間：** 10s 影片 ~31-35s（inference 16-20s + enhance 13-15s）。持續流量下每 job 間隔 ≈ inference 時間，因 enhance 被 semaphore pipeline 平行化掉。
+**單 job 時間：** 10s 影片 ~45-55s（inference 25-27s + enhance 14-20s）。15s 影片 ~70s（inference ~34s + enhance ~33s）。持續流量下每 job 間隔 ≈ inference 時間，因 enhance 被 semaphore pipeline 平行化掉。
 
 ---
 
@@ -310,7 +310,7 @@ ENHANCE_BATCH_SIZE     = 8      # 降自 32，避 bf16 Gemma 環境下 GFPGAN fo
 ENHANCE_DETECT_EVERY   = 2      # 每 2 幀做人臉偵測（實測 4 會讓快速動作臉框過時 → 臉變形）
 ENHANCE_TEMPORAL_BLEND = 0.85   # 85% 時間平滑（防閃爍）
 ENHANCE_DEFLICKER      = 25     # 升自 15，加強時域亮度平滑抑 flicker（只壓亮度不動臉部幾何）
-ENHANCE_UPSCALE        = 2      # 2x Lanczos 放大（512×768 → 1024×1536）
+ENHANCE_UPSCALE        = 2      # 2x Lanczos 放大（default 640×960 → 1280×1920）
 ```
 
 **Flicker 來源 × 緩解方式：**
