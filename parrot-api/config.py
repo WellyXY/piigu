@@ -52,8 +52,8 @@ POSITION_SECONDARY: dict[str, tuple[str, float]] = {
 }
 
 # -- Default inference params (matching run_batch_3lora.sh) --------------------
-DEFAULT_HEIGHT = 768
-DEFAULT_WIDTH = 512
+DEFAULT_HEIGHT = 960   # was 768 — raised 2026-04-22 after 20-case A/B test showed better detail at 640×960
+DEFAULT_WIDTH = 640    # was 512
 DEFAULT_NUM_FRAMES = 249
 DEFAULT_FRAME_RATE = 25
 DEFAULT_SEED = 42

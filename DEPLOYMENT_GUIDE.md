@@ -1,6 +1,6 @@
 # Parrot API — 部署、配置與運行策略
 
-> 最後更新：2026-04-22（bf16 Gemma + eager attention patch；卸載 bitsandbytes；ENHANCE_BATCH_SIZE 32→8 避 OOM；ENHANCE_DEFLICKER 15→25 抑制臉部 flicker；base LoRA rescale 跳過 audio 層）
+> 最後更新：2026-04-22（default 解析度 512×768 → 640×960 A/B 通過後採用；bf16 Gemma + eager attention patch；卸載 bitsandbytes；ENHANCE_BATCH_SIZE 32→8 避 OOM；ENHANCE_DEFLICKER 15→25 抑制臉部 flicker；base LoRA rescale 跳過 audio 層）
 
 ---
 
@@ -249,8 +249,8 @@ GFPGAN_MODEL         = "/workspace/GFPGANv1.4.pth"
 LORA_DIR             = "/workspace/models/loras"
 
 # 推理預設值
-DEFAULT_HEIGHT     = 768
-DEFAULT_WIDTH      = 512
+DEFAULT_HEIGHT     = 960    # 2026-04-22 raised from 768 after A/B test
+DEFAULT_WIDTH      = 640    # 2026-04-22 raised from 512
 DEFAULT_NUM_FRAMES = 249    # ~10s @ 25fps
 DEFAULT_FRAME_RATE = 25
 DEFAULT_SEED       = 42
@@ -360,14 +360,14 @@ FastAPI (server.py)
 **Pipeline 平行化策略：**
 
 ```
-Request A:  [Inference 16-20s (bf16)] ──────── [Enhancement 13-15s (batch=8)]
-Request B:                [Inference 16-20s] ────────── [Enhancement]
-                          ^
-                          semaphore 在 inference 完成後即釋放
-                          enhancement 與下一個 inference 同時進行
+Request A:  [Inference 25-27s (bf16, 640×960)] ──── [Enhancement 14-20s (batch=8)]
+Request B:                     [Inference 25-27s] ──── [Enhancement]
+                               ^
+                               semaphore 在 inference 完成後即釋放
+                               enhancement 與下一個 inference 同時進行
 ```
 
-單一 10s 影片端到端 ~31-35s（無 queue），連續流量下每 job 間隔 ≈ inference 時間（~16-20s）因 enhance 被 overlap 掉。
+單一 10s 影片端到端 ~45-55s（無 queue，default 640×960），連續流量下每 job 間隔 ≈ inference 時間（~25-27s）因 enhance 被 overlap 掉。
 
 ---
 

@@ -1,6 +1,6 @@
 # Piigu — 推理 Pipeline、LoRA 策略與 Prompt 設計
 
-> 最後更新：2026-04-22（Gemma 改 bf16 + eager attention；audio 層在 position/base LoRA swap 時都跳過；ENHANCE_BATCH_SIZE 32→8 避 OOM；ENHANCE_DEFLICKER 15→25 抑制臉部 flicker）
+> 最後更新：2026-04-22（default 解析度 512×768 → 640×960，A/B 測試後採用；Gemma 改 bf16 + eager attention；audio 層在 position/base LoRA swap 時都跳過；ENHANCE_BATCH_SIZE 32→8 避 OOM；ENHANCE_DEFLICKER 15→25 抑制臉部 flicker）
 
 ---
 
@@ -274,31 +274,31 @@ pipeline(
 
 Duration 支援範圍：**5s – 15s**（前端滑桿 + API 均驗證）
 
-### 解析度階段拆解（當前 default 512×768）
+### 解析度階段拆解（當前 default 640×960）
 
 ```
-Stage 1 (LTX 低解析度生成，8 steps)    →  256×384   基底
-Stage 2 (spatial upsampler x2, 3 steps)→  512×768   raw_video 輸出
-GFPGAN 臉部強化（per-frame）            →  512×768   同解析度修臉
-ffmpeg lanczos 2x upscale              →  1024×1536 最終 enhanced_video
+Stage 1 (LTX 低解析度生成，8 steps)    →  320×480   基底
+Stage 2 (spatial upsampler x2, 3 steps)→  640×960   raw_video 輸出
+GFPGAN 臉部強化（per-frame）            →  640×960   同解析度修臉
+ffmpeg lanczos 2x upscale              →  1280×1920 最終 enhanced_video
 ```
 
 - **Stage 1** = 目標解析度的 1/2（DistilledPipeline 自動）
 - **Stage 2** 是**有學習過**的 spatial upscaler（加細節）
 - **ffmpeg lanczos** 是**純插值**，不加細節，只放大像素
 
-### 解析度實驗紀錄（2026-04-22）
+### 解析度 A/B 測試紀錄（2026-04-22）
 
-曾測試把目標解析度從 512×768 提升到 **640×960**（Stage 1 → 320×480，最終 → 1280×1920）：
+比較 512×768 vs 640×960，每個位置跑 10+ cases（cowgirl / missionary 各 10，doggy/lift_clothes/masturbation 各 1）：
 
 | 解析度 | Stage 1 | 最終輸出 | inference_s | enhance_s | wall |
 |--------|---------|----------|-------------|-----------|------|
-| 512×768（default） | 256×384 | 1024×1536 | 16-20s | 13-15s | ~33s |
-| 640×960（測試） | 320×480 | 1280×1920 | 25-27s | 14-20s | ~50s |
+| 512×768（原 default） | 256×384 | 1024×1536 | 16-20s | 13-15s | ~33s |
+| **640×960（新 default）** | **320×480** | **1280×1920** | **25-27s** | **14-20s** | **~50s** |
 
-**結論：保留 512×768 default。** 提升解析度只讓 Stage 1 token 更多但 ROI 不明確——LTX 2.3 22B 訓練的標準 portrait 解析度是 512×768 / 704×1216，640×960 屬非標準，畫質可能 OOD 而非線性提升。
+**決定：採用 640×960 為 default**（視覺對照後確認細節明顯提升，值得 +50% 推理時間）。
 
-per-request 仍可以用 `height/width` 欄位 override（API 層接受），若需要高解析度輸出臨時跑。
+per-request 仍可以用 `height/width` 欄位 override（API 層接受）。
 
 ---
 
