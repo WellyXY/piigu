@@ -66,9 +66,9 @@ DEFAULT_LORA_WEIGHTS = {
 
 # -- Default V5 face enhancement params ---------------------------------------
 ENHANCE_BATCH_SIZE = 8  # reduced from 32 to keep activation VRAM peak ~5GB (bf16 Gemma + LTX leaves ~13GB headroom)
-ENHANCE_DETECT_EVERY = 4
+ENHANCE_DETECT_EVERY = 2
 ENHANCE_TEMPORAL_BLEND = 0.85
-ENHANCE_DEFLICKER = 25
+ENHANCE_DEFLICKER = 15
 ENHANCE_UPSCALE = 2  # ffmpeg lanczos 2x upscale after GFPGAN (512x768 → 1024x1536)
 
 # -- Output / Server ----------------------------------------------------------
