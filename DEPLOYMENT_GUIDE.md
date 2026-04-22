@@ -1,6 +1,6 @@
 # Parrot API — 部署、配置與運行策略
 
-> 最後更新：2026-04-10（切回 distilled checkpoint；移除 distill LoRA；inference_engine prompt 策略修正；DEFAULT_AUDIO 新增 boobs_play/dildo；deploy.sh 加入 transformers ALL_PARALLEL_STYLES patch；移除 PYTHONPATH=/root workaround）
+> 最後更新：2026-04-22（bf16 Gemma + eager attention patch；卸載 bitsandbytes；ENHANCE_BATCH_SIZE 32→8 避 OOM；ENHANCE_DEFLICKER 15→25 抑制臉部 flicker；base LoRA rescale 跳過 audio 層）
 
 ---
 
@@ -11,8 +11,8 @@
 | **啟動 Server** | 見 Step 5（`cd /workspace/parrot-api && nohup /workspace/venv/bin/python server.py > /workspace/parrot-api.log 2>&1 &`） |
 | **確認就緒** | `curl http://localhost:8000/status` |
 | **監看日誌** | `tail -f /workspace/parrot-api.log` |
-| **停止 Server** | `pkill -9 -f 'server.py\|ray'` |
-| **完整重啟** | `pkill -9 -f 'ray\|server.py'; sleep 3; cd /workspace/parrot-api && nohup /workspace/venv/bin/python server.py > /workspace/parrot-api.log 2>&1 &` |
+| **停止 Server** | ⚠️ **不要用 `pkill -f server.py`**（會匹配到自己的 ssh shell）。用 `ps -eo pid,cmd \| awk '$0 ~ /venv\/bin\/python server\.py/ && $0 !~ /awk/ {print $1}' \| xargs -r kill -9` |
+| **完整重啟** | 先 kill server（上一格）→ `/workspace/venv/bin/ray stop --force` → 重啟 server |
 
 ---
 
@@ -62,13 +62,15 @@ bash deploy.sh <PORT> <HOST_IP>
 `deploy.sh` 會自動：
 1. SCP `config.py`, `server.py`, `actors/`, `persistent_pipeline.py` 等到 pod
 2. 在 pod 建立 `/workspace/venv`（`--system-site-packages`，保留 torch 2.4.1）
-3. 安裝 pip 依賴（requirements.txt + gfpgan/facexlib/basicsr/bitsandbytes + transformers 4.52.0 + ltx-core/ltx-pipelines）
+3. 安裝 pip 依賴（requirements.txt + gfpgan/facexlib/basicsr + transformers 4.52.0 + ltx-core/ltx-pipelines）
+   - ⚠️ **不要安裝 bitsandbytes**：裝了會讓 Gemma 自動走 int8 path，破壞 speech 精度。bf16 Gemma 是目前唯一能穩定產生清晰 dirty talk 的路徑。
 4. 套用以下 patches：
    - **torchvision** `_meta_registrations` import 移除
    - **basicsr** `functional_tensor` → `functional` 改名
    - **patch_nms.py** torchvision NMS 修正
    - **Gemma3 autocast** `torch.autocast` → `torch.amp.autocast`（torch 2.4.1 相容性）
    - **transformers ALL_PARALLEL_STYLES**（4.52.0 + torch < 2.5 的 `None` bug 修正）
+   - **Gemma3 eager attention**（必做）：在 `/workspace/ltx2_repo/packages/ltx-core/src/ltx_core/text_encoders/gemma/encoders/encoder_configurator.py` 的 `Gemma3Config` 建立後加入 `gemma_config._attn_implementation = "eager"`。否則 bf16 + SDPA attention 會產生 NaN hidden states → 全黑影片。
 
 ---
 
@@ -76,8 +78,8 @@ bash deploy.sh <PORT> <HOST_IP>
 
 ```bash
 # 確認 network volume 上的模型都在
-ls /workspace/models/ltx23/        # 應有 2 個 .safetensors
-ls /workspace/models/loras/        # 應有 12 個 .safetensors（含 blow_job_v2、lift_clothes、handjob、dildo、boobs_play）
+ls /workspace/models/ltx23/        # 應有 2 個 .safetensors（distilled + spatial-upscaler）
+ls /workspace/models/loras/        # 應有 10 個 position .safetensors 和 2 個 base LoRA
 ls /workspace/gemma_configs/       # 應有 Gemma 分片
 ls /workspace/GFPGANv1.4.pth      # 應存在
 ```
@@ -124,8 +126,14 @@ curl http://localhost:8000/status
 ```json
 {
   "status": "ready",
-  "ltx": {"model": "LTX-2.3", "ready": true, "vram_mb": 43000},
-  "gfpgan": {"model": "GFPGANv1.4", "ready": true, "vram_mb": 3200},
+  "ltx": {
+    "current_position": ["cowgirl", 0.8],
+    "transformer_loaded": true,
+    "gemma_loaded": true,
+    "device": "cuda",
+    "position_loras_cached": ["blow_job", "cowgirl", "doggy", "handjob", "lift_clothes", "masturbation", "missionary", "reverse_cowgirl", "dildo", "boobs_play"]
+  },
+  "gfpgan": {"model": "GFPGANv1.4", "ready": true, "vram_mb": 525},
   "queue_depth": 0
 }
 ```
@@ -135,10 +143,11 @@ curl http://localhost:8000/status
 | 階段 | 時間 |
 |------|------|
 | Python + Ray 初始化 | 5-8s |
-| GFPGAN actor 載入 | 5-8s |
-| LTX transformer 載入（43GB from disk） | 4-5min |
-| Position LoRA delta 預計算（8 個，CPU） | 1-2min |
-| **合計** | **~6-7min** |
+| GFPGAN actor 載入 | 10-12s |
+| LTX transformer 載入（43GB from disk） | 10-30s |
+| bf16 Gemma 載入 | 8-10s |
+| Position LoRA delta 預計算（10 個，CPU） | 3-4min |
+| **合計** | **~4-5min** |
 
 > **注意：** Base LoRA（nsfw/motion）的 delta **不在** warmup 預計算（B@A 展開後約 71GB CPU RAM，會 OOM）。改為 on-demand GPU layer-by-layer 計算，weight 變更時才觸發（~1s/per LoRA，H100 實測）。大部分請求使用預設值→直接跳過，**零額外耗時**。
 
@@ -173,7 +182,7 @@ exec python3 -m workers.gpu_worker --gpu_id 0
 
 > **注意：** 必須 source .env 才能讀到 REDIS_URL 等 credentials，否則 worker 會嘗試連 localhost:6379 失敗。
 
-**必須透過包裝器啟動**，原因：bitsandbytes 的 CUDA 13 動態庫（`libnvJitLink.so.13`）需要設定 `LD_LIBRARY_PATH`，否則 Gemma int8 量化會報錯。
+**必須透過包裝器啟動**，原因：需要設定 `LD_LIBRARY_PATH` 指向 `nvidia/cu13/lib`，否則 Ray actor 初始化時 torch 動態庫載入會 segfault。（目前 Gemma 跑 bf16，不經過 int8 path，但 torch 本身仍需要此設定。）
 
 ---
 
@@ -208,12 +217,12 @@ exec python3 -m workers.gpu_worker --gpu_id 0
 │       ├── LTX2_3_NSFW_furry_concat_v2.safetensors    ← 常駐 w=1.0
 │       ├── LTX23_NSFW_Motion.safetensors               ← 常駐 w=0.7
 │       ├── blow_job_v2.safetensors                     ← 熱切換 w=0.8（自訓練 v2；⚠️ 待 retrain）
-│       ├── boobs_play.safetensors                      ← 熱切換 w=0.8（自訓練 v2；⚠️ 待 retrain）
+│       ├── boobs_play.safetensors                      ← 熱切換 w=0.8（自訓練 v3 step1000）
 │       ├── cowgirl.safetensors                         ← 熱切換 w=0.8  CivitAI
-│       ├── dildo.safetensors                           ← 熱切換 w=0.8（自訓練 v2；⚠️ 待 retrain）
+│       ├── dildo.safetensors                           ← 熱切換 w=0.8（自訓練 v3 step1250）
 │       ├── doggy.safetensors                           ← 熱切換 w=0.8  CivitAI
 │       ├── handjob.safetensors                         ← 熱切換 w=0.8（自訓練；stack blow_job w=0.6）
-│       ├── lift_clothes.safetensors                    ← 熱切換 w=0.6（自訓練 v2；nsfw/motion 前端預設 0.0）
+│       ├── lift_clothes_v2.safetensors                 ← 熱切換 w=0.6（自訓練 production v2；來源 models_backup/ltx23_production/positions/）
 │       ├── masturbation.safetensors                    ← 熱切換 w=0.8  CivitAI
 │       ├── missionary.safetensors                      ← 熱切換 w=0.8  CivitAI
 │       └── reverse_cowgirl.safetensors                 ← 熱切換 w=0.8  CivitAI
@@ -261,8 +270,8 @@ POSITION_LORA_WEIGHTS = {
     "masturbation":    0.8,
     "missionary":      0.8,
     "reverse_cowgirl": 0.8,
-    "dildo":           0.8,   # ⚠️ 待 retrain
-    "boobs_play":      0.8,   # ⚠️ 待 retrain
+    "dildo":           0.8,   # 自訓練 v3 step1250
+    "boobs_play":      0.8,   # 自訓練 v3 step1000
 }
 
 # 疊加 Position LoRA（handjob 同時 stack blow_job）
@@ -271,10 +280,10 @@ POSITION_SECONDARY = {
 }
 
 # GFPGAN V5 增強參數
-ENHANCE_BATCH_SIZE      = 32
-ENHANCE_DETECT_EVERY    = 2
+ENHANCE_BATCH_SIZE      = 8     # 降自 32，避 bf16 Gemma 環境下 forward pass activation OOM
+ENHANCE_DETECT_EVERY    = 2     # 快速動作時 DETECT_EVERY≥3 會因 bbox 過時導致人臉變形，保留 2
 ENHANCE_TEMPORAL_BLEND  = 0.85
-ENHANCE_DEFLICKER       = 15
+ENHANCE_DEFLICKER       = 25    # 升自 15，更強時域亮度平滑（deflicker 不動人臉幾何，只穩亮度）
 ENHANCE_UPSCALE         = 2     # FFmpeg 2x Lanczos 放大
 
 # Server
@@ -318,10 +327,12 @@ if include_audio:
 
 > ⚠️ 舊版本缺少 `boobs_play` 和 `dildo`，導致這兩個 position 開啟 dirty talk 卻無音效。已修正。
 
-#### 當前 Checkpoint（2026-04-10）
+#### 當前 Checkpoint（2026-04-22）
 - **使用**：`ltx-2.3-22b-distilled.safetensors`（43GB）
+- **Text encoder**：Gemma-3 12B **bf16**（~24GB VRAM；bitsandbytes 未安裝）
+  - 關鍵 patch：`Gemma3Config._attn_implementation = "eager"`（避 bf16 + SDPA 的 NaN bug）
 - **Base LoRA**：NSFW (w=1.0) + Motion (w=0.7)，**distill LoRA 已移除**
-- **Position LoRA**：10 個 position 熱切換（各自權重見 config.py）
+- **Position LoRA**：10 個 position 熱切換（各自權重見 config.py）；音訊層（audio_attn1/2、audio_ff、audio_to_video_attn、video_to_audio_attn）在 position LoRA 和 base LoRA swap 時都會跳過，避免破壞 speech 生成
 
 ---
 
@@ -333,24 +344,28 @@ FastAPI (server.py)
   ├── _inference_sem (asyncio.Semaphore(1))   ← 同時只跑一個推理
   │
   ├── LTXInferenceActor  [num_gpus=0.8]
-  │    ├── DistilledPipeline (Transformer 常駐)
-  │    ├── PersistentPromptEncoder (Gemma int8 常駐)
-  │    └── PersistentDiffusionStage (8 個 position delta 預載)
+  │    ├── DistilledPipeline (Transformer 常駐 ~43GB VRAM)
+  │    ├── PersistentPromptEncoder (Gemma-3 12B bf16 常駐 ~24GB VRAM)
+  │    └── PersistentDiffusionStage (10 個 position delta 預載於 CPU RAM)
   │
   └── GFPGANEnhanceActor [num_gpus=0.2]
-       ├── GFPGANv1.4 (常駐)
-       └── free_cache() — 推理前清除 CUDA cache（防 OOM）
+       ├── GFPGANv1.4 (常駐 ~525MB VRAM)
+       └── free_cache() — 推理前清除 CUDA cache（釋放 enhance 完的 cached memory 給 LTX）
 ```
+
+**總 idle VRAM ≈ 67-69GB / 80GB。**
 
 **Pipeline 平行化策略：**
 
 ```
-Request A:  [Inference 12-14s] ────────── [Enhancement 8-10s]
-Request B:               [Inference 12-14s] ────────── [Enhancement]
-                         ^
-                         semaphore 在 inference 完成後即釋放
-                         enhancement 與下一個 inference 同時進行
+Request A:  [Inference 16-20s (bf16)] ──────── [Enhancement 13-15s (batch=8)]
+Request B:                [Inference 16-20s] ────────── [Enhancement]
+                          ^
+                          semaphore 在 inference 完成後即釋放
+                          enhancement 與下一個 inference 同時進行
 ```
+
+單一 10s 影片端到端 ~31-35s（無 queue），連續流量下每 job 間隔 ≈ inference 時間（~16-20s）因 enhance 被 overlap 掉。
 
 ---
 
@@ -572,19 +587,31 @@ Railway 自動注入：`PORT`、`REDIS_URL`、`DATABASE_URL`。
 
 ## 十四、版本鎖定（關鍵）
 
+當前 pod 實測工作版本（2026-04-22）：
+
 ```bash
-# PyTorch — 必須與 CUDA 版本匹配
-torch==2.11.0+cu130
-torchvision==0.26.0+cu130
-torchaudio==2.11.0+cu130
---index-url https://download.pytorch.org/whl/cu130
+# PyTorch 2.4.1 + CUDA 12.4
+torch==2.4.1+cu124
+torchvision==0.19.1+cu124
+torchaudio==2.4.1+cu124
+--index-url https://download.pytorch.org/whl/cu124
 
-# transformers — 絕對不能升到 5.x，會破壞 LTX-2 + Gemma3 管道
-transformers==4.52.1
+# transformers — 不能升到 5.x，會破壞 LTX-2 + Gemma3 管道
+transformers==4.52.0
+# 需配合 ALL_PARALLEL_STYLES patch（見 Step 3）
 
-# bitsandbytes — 需要 libnvJitLink.so.13
+# bitsandbytes — 不要安裝！
+# 裝了之後 transformers 會自動把 Gemma 跑 int8 path，
+# 破壞 speech 精度（dirty talk 變成模糊音效或消失）
+# Gemma 必須跑 bf16 才能產生清晰角色語音
+
+# LD_LIBRARY_PATH — 仍需設定（torch 動態庫載入）
 export LD_LIBRARY_PATH=/usr/local/lib/python3.11/dist-packages/nvidia/cu13/lib:$LD_LIBRARY_PATH
 ```
+
+**關鍵 patch 清單：**
+1. `/workspace/ltx2_repo/packages/ltx-core/src/ltx_core/text_encoders/gemma/encoders/encoder_configurator.py` — `Gemma3Config._attn_implementation = "eager"`（修 bf16 + SDPA 的 NaN bug，見 Step 3）
+2. `persistent_pipeline.py` — position 和 base LoRA swap 都跳過 audio 層（`audio_attn1/2`、`audio_ff`、`audio_to_video_attn`、`video_to_audio_attn`）
 
 ---
 
@@ -593,7 +620,9 @@ export LD_LIBRARY_PATH=/usr/local/lib/python3.11/dist-packages/nvidia/cu13/lib:$
 | 症狀 | 原因 | 解法 |
 |------|------|------|
 | `ModuleNotFoundError: ltx_pipelines` | LTX-2 repo 未安裝 | 重跑 fresh_setup.sh 步驟 [1/6] |
-| `CUDA out of memory` 在 GFPGAN | GFPGAN cache 未清 | server.py 已自動處理；手動：`gfpgan_actor.free_cache.remote()` |
+| `CUDA out of memory` 在 GFPGAN `enhance` | bf16 Gemma 24GB + LTX 43GB = 67GB 佔用；batch=32 時 GFPGAN forward activation ~19GB 峰值會 OOM | 已修：`ENHANCE_BATCH_SIZE=8`（activation 峰值 ~5GB，有 ~13GB 餘裕） |
+| 影片全黑（inference 正常但畫面全黑） | Gemma bf16 + SDPA attention 產生 NaN hidden states | 已修：`Gemma3Config._attn_implementation = "eager"`（encoder_configurator.py） |
+| Dirty talk 變模糊音效或消失 | bitsandbytes 被安裝 → Gemma 自動走 int8 path → speech 精度破壞 | `pip uninstall -y bitsandbytes` → 重啟 server |
 | `ray::OutOfMemoryError` 在 LTX actor init（144GB+ RAM） | 舊版預計算 nsfw+motion B@A delta，展開後 ~71GB CPU RAM | 已修復：base LoRA delta 改為 on-demand，不在 warmup 持久存儲 |
 | Position LoRA 完全沒效果（所有 position 輸出一樣） | `_compute_lora_deltas` key matching bug：param 端 key 與 LoRA 端 key prefix 不符 → 空 dict | 已修復（suffix index 方式匹配）；確認 log 有 `matched N/M LoRA layers` |
 | Base LoRA（nsfw/motion）swap 後視覺無變化 | `swap_base_loras` 對合成 `.weight` key 呼叫 `op.apply_to_key`，rename map 不認識此格式，suffix_index 永遠 miss → delta=0（matched=1344 但實際 magnitude=0） | 已修復（2026-04-07）：先 rename 實際 `lora_A.weight` key，strip suffix 得 renamed_prefix，再查 suffix_index；magnitude 現為 ~11M |
