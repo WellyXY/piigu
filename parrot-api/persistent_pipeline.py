@@ -246,6 +246,18 @@ class PersistentDiffusionStage(DiffusionStage):
                     param_name = suffix_index.get(lora_weight_key)
                     if param_name is None:
                         continue
+                    # Same as position deltas: avoid touching audio-branch weights when rescaling base LoRAs.
+                    if any(
+                        a in renamed_prefix
+                        for a in (
+                            "audio_attn1",
+                            "audio_attn2",
+                            "audio_ff",
+                            "audio_to_video_attn",
+                            "video_to_audio_attn",
+                        )
+                    ):
+                        continue
                     # Load A, B → GPU, compute delta in-place, apply, free immediately
                     A = f.get_tensor(f"{orig_prefix}.lora_A.weight").to(device=device, dtype=dtype)
                     B = f.get_tensor(f"{orig_prefix}.lora_B.weight").to(device=device, dtype=dtype)
