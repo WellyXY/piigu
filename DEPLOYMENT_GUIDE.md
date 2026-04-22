@@ -64,6 +64,8 @@ bash deploy.sh <PORT> <HOST_IP>
 2. 在 pod 建立 `/workspace/venv`（`--system-site-packages`，保留 torch 2.4.1）
 3. 安裝 pip 依賴（requirements.txt + gfpgan/facexlib/basicsr + transformers 4.52.0 + ltx-core/ltx-pipelines）
    - ⚠️ **不要安裝 bitsandbytes**：裝了會讓 Gemma 自動走 int8 path，破壞 speech 精度。bf16 Gemma 是目前唯一能穩定產生清晰 dirty talk 的路徑。
+   - **系統層：裝 ffmpeg（給 GFPGAN enhance 用）**：`apt-get update -qq && apt-get install -y ffmpeg`。沒裝會讓 `enhance=True` 失敗，log 看到 `FileNotFoundError: 'ffmpeg'`。
+   - **worker 依賴（system python3，非 venv）**：`start_worker.sh` 用系統 `python3` 跑。新 pod 要裝：`pip install 'redis[asyncio]>=5.0' pydantic asyncpg boto3 httpx pillow tenacity`。沒裝 worker 啟動即 `ModuleNotFoundError`，job 卡 queue `started_at=null`。
 4. 套用以下 patches：
    - **torchvision** `_meta_registrations` import 移除
    - **basicsr** `functional_tensor` → `functional` 改名
@@ -621,6 +623,8 @@ export LD_LIBRARY_PATH=/usr/local/lib/python3.11/dist-packages/nvidia/cu13/lib:$
 |------|------|------|
 | `ModuleNotFoundError: ltx_pipelines` | LTX-2 repo 未安裝 | 重跑 fresh_setup.sh 步驟 [1/6] |
 | `CUDA out of memory` 在 GFPGAN `enhance` | bf16 Gemma 24GB + LTX 43GB = 67GB 佔用；batch=32 時 GFPGAN forward activation ~19GB 峰值會 OOM | 已修：`ENHANCE_BATCH_SIZE=8`（activation 峰值 ~5GB，有 ~13GB 餘裕） |
+| `FileNotFoundError: 'ffmpeg'` 在 enhance | 新 pod 沒有裝 ffmpeg（apt 不繼承 network volume） | `apt-get update -qq && apt-get install -y ffmpeg` |
+| Worker 不拉 job（job `started_at=null` 永遠 queue） | `start_worker.sh` 用 system python3，缺 redis/pydantic 等套件 | `pip install 'redis[asyncio]>=5.0' pydantic asyncpg boto3 httpx pillow tenacity`，然後重啟 worker |
 | 影片全黑（inference 正常但畫面全黑） | Gemma bf16 + SDPA attention 產生 NaN hidden states | 已修：`Gemma3Config._attn_implementation = "eager"`（encoder_configurator.py） |
 | Dirty talk 變模糊音效或消失 | bitsandbytes 被安裝 → Gemma 自動走 int8 path → speech 精度破壞 | `pip uninstall -y bitsandbytes` → 重啟 server |
 | `ray::OutOfMemoryError` 在 LTX actor init（144GB+ RAM） | 舊版預計算 nsfw+motion B@A delta，展開後 ~71GB CPU RAM | 已修復：base LoRA delta 改為 on-demand，不在 warmup 持久存儲 |
