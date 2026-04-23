@@ -35,6 +35,10 @@ class GenerateRequest(BaseModel):
     frame_rate: int = cfg.DEFAULT_FRAME_RATE
     seed: int = cfg.DEFAULT_SEED
     lora_weights: dict = Field(default_factory=lambda: dict(cfg.DEFAULT_LORA_WEIGHTS))
+    # Top-level convenience fields (worker sends these; override lora_weights dict when present)
+    nsfw_weight: float | None = None
+    motion_weight: float | None = None
+    position_weight: float | None = None
     enhance: bool = True
     audio_description: str | None = Field(
         None, description="Optional Audio: section for dirty talk"
@@ -113,7 +117,14 @@ async def generate(req: GenerateRequest):
     if req.audio_description:
         full_prompt = f"{req.prompt} Audio: {req.audio_description}"
 
-    lw = req.lora_weights
+    # Merge top-level weight overrides into lora_weights (top-level wins if set)
+    lw = dict(req.lora_weights)
+    if req.nsfw_weight is not None:
+        lw["nsfw"] = req.nsfw_weight
+    if req.motion_weight is not None:
+        lw["motion"] = req.motion_weight
+    if req.position_weight is not None:
+        lw["position"] = req.position_weight
     _pending_tasks += 1
     t0 = time.perf_counter()
 
