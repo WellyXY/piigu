@@ -91,6 +91,10 @@ class LTXInferenceActor:
             loras=_base_loras(default_nsfw_w, default_motion_w),
             position_loras=position_loras,
             initial_position_key=_pos_key(default_pos, default_pos_w_actual),
+            scalable_loras={
+                "nsfw":   (cfg.NSFW_LORA,   default_nsfw_w),
+                "motion": (cfg.MOTION_LORA, default_motion_w),
+            },
         )
         persistent_stage.warmup()
         self.pipeline.stage = persistent_stage
@@ -109,10 +113,6 @@ class LTXInferenceActor:
 
     def _ensure_base_loras(self, nsfw_w: float, motion_w: float) -> None:
         """Hot-swap NSFW/Motion base LoRA weights if changed (~1s, GPU layer-by-layer)."""
-        logger.info(
-            f"_ensure_base_loras: requested nsfw={nsfw_w} motion={motion_w}; "
-            f"current nsfw={self._current_nsfw_w} motion={self._current_motion_w}"
-        )
         if nsfw_w == self._current_nsfw_w and motion_w == self._current_motion_w:
             return
         self._persistent_stage.swap_base_loras({"nsfw": nsfw_w, "motion": motion_w})
