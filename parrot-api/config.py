@@ -29,6 +29,7 @@ POSITION_LORAS = {
     "reverse_cowgirl": str(LORA_DIR / "reverse_cowgirl.safetensors"),
     "dildo":           str(LORA_DIR / "dildo.safetensors"),
     "boobs_play":      str(LORA_DIR / "boobs_play.safetensors"),
+    "cumshot":         str(LORA_DIR / "cumshot.safetensors"),
 }
 
 # Per-position LoRA weight overrides (default: DEFAULT_LORA_WEIGHTS["position"])
@@ -43,7 +44,9 @@ POSITION_LORA_WEIGHTS: dict[str, float] = {
     "reverse_cowgirl": 0.8,
     "dildo":           0.8,
     "boobs_play":      0.8,
+    "cumshot":         1.0,
     # dildo/boobs_play: v3 — dildo step1250, boobs_play step1000
+    # cumshot: v2 step2000, trained on DEV (distilled inference; start w=1.0, bump to 1.2-1.5 if too weak)
 }
 
 # Secondary LoRA stacked on top of position LoRA for certain positions

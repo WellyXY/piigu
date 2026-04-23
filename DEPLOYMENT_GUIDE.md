@@ -64,6 +64,7 @@ bash deploy.sh <PORT> <HOST_IP>
 2. 在 pod 建立 `/workspace/venv`（`--system-site-packages`，保留 torch 2.4.1）
 3. 安裝 pip 依賴（requirements.txt + gfpgan/facexlib/basicsr + transformers 4.52.0 + ltx-core/ltx-pipelines）
    - ⚠️ **不要安裝 bitsandbytes**：裝了會讓 Gemma 自動走 int8 path，破壞 speech 精度。bf16 Gemma 是目前唯一能穩定產生清晰 dirty talk 的路徑。
+   - ⚠️ **新 pod 的 venv 可能預裝 bnb**（base image 帶入）：啟動前 `/ workspace/venv/bin/pip uninstall -y bitsandbytes` 檢查。log 看到 `bitsandbytes available — Gemma will be quantized to int8` 就是中招，必須 uninstall 後重啟。
    - **系統層：裝 ffmpeg（給 GFPGAN enhance 用）**：`apt-get update -qq && apt-get install -y ffmpeg`。沒裝會讓 `enhance=True` 失敗，log 看到 `FileNotFoundError: 'ffmpeg'`。
    - **worker 依賴（system python3，非 venv）**：`start_worker.sh` 用系統 `python3` 跑。新 pod 要裝：`pip install 'redis[asyncio]>=5.0' pydantic asyncpg boto3 httpx pillow tenacity`。沒裝 worker 啟動即 `ModuleNotFoundError`，job 卡 queue `started_at=null`。
 4. 套用以下 patches：
