@@ -1,6 +1,6 @@
 # Parrot API — 部署、配置與運行策略
 
-> 最後更新：2026-04-22（default 解析度 512×768 → 640×960 A/B 通過後採用；bf16 Gemma + eager attention patch；卸載 bitsandbytes；ENHANCE_BATCH_SIZE 32→8 避 OOM；ENHANCE_DEFLICKER 15→25 抑制臉部 flicker；base LoRA rescale 跳過 audio 層）
+> 最後更新：2026-04-23（新增 cumshot position LoRA（11 個）；**真正修好** base LoRA (nsfw/motion) 熱切換（3 層 bug：server Pydantic 欄位沒宣告 + actor 沒呼叫 _ensure_base_loras + PersistentDiffusionStage 沒接 scalable_loras kwarg）；MooseFS quota workaround 改走 `/dev/shm` symlink（/root 只有 20GB）；default 解析度 640×960；bf16 Gemma + eager attention patch；卸載 bitsandbytes）
 
 ---
 
@@ -82,7 +82,7 @@ bash deploy.sh <PORT> <HOST_IP>
 ```bash
 # 確認 network volume 上的模型都在
 ls /workspace/models/ltx23/        # 應有 2 個 .safetensors（distilled + spatial-upscaler）
-ls /workspace/models/loras/        # 應有 10 個 position .safetensors 和 2 個 base LoRA
+ls /workspace/models/loras/        # 應有 11 個 position .safetensors 和 2 個 base LoRA
 ls /workspace/gemma_configs/       # 應有 Gemma 分片
 ls /workspace/GFPGANv1.4.pth      # 應存在
 ```
@@ -134,7 +134,7 @@ curl http://localhost:8000/status
     "transformer_loaded": true,
     "gemma_loaded": true,
     "device": "cuda",
-    "position_loras_cached": ["blow_job", "cowgirl", "doggy", "handjob", "lift_clothes", "masturbation", "missionary", "reverse_cowgirl", "dildo", "boobs_play"]
+    "position_loras_cached": ["blow_job", "cowgirl", "doggy", "handjob", "lift_clothes", "masturbation", "missionary", "reverse_cowgirl", "dildo", "boobs_play", "cumshot"]
   },
   "gfpgan": {"model": "GFPGANv1.4", "ready": true, "vram_mb": 525},
   "queue_depth": 0
@@ -228,7 +228,8 @@ exec python3 -m workers.gpu_worker --gpu_id 0
 │       ├── lift_clothes_v2.safetensors                 ← 熱切換 w=0.6（自訓練 production v2；來源 models_backup/ltx23_production/positions/）
 │       ├── masturbation.safetensors                    ← 熱切換 w=0.8  CivitAI
 │       ├── missionary.safetensors                      ← 熱切換 w=0.8  CivitAI
-│       └── reverse_cowgirl.safetensors                 ← 熱切換 w=0.8  CivitAI
+│       ├── reverse_cowgirl.safetensors                 ← 熱切換 w=0.8  CivitAI
+│       └── cumshot.safetensors                         ← 熱切換 w=1.0（自訓練 v2 step2000；trigger: ltxmove_cumshot）
 │
 ├── gemma_configs/                 ← Gemma-3 12B 模型檔案
 ├── GFPGANv1.4.pth
@@ -275,6 +276,7 @@ POSITION_LORA_WEIGHTS = {
     "reverse_cowgirl": 0.8,
     "dildo":           0.8,   # 自訓練 v3 step1250
     "boobs_play":      0.8,   # 自訓練 v3 step1000
+    "cumshot":         1.0,   # 自訓練 v2 step2000, trigger: ltxmove_cumshot（DEV 訓，distilled 推；w=1.0 起，弱可升 1.2-1.5）
 }
 
 # 疊加 Position LoRA（handjob 同時 stack blow_job）
@@ -335,7 +337,7 @@ if include_audio:
 - **Text encoder**：Gemma-3 12B **bf16**（~24GB VRAM；bitsandbytes 未安裝）
   - 關鍵 patch：`Gemma3Config._attn_implementation = "eager"`（避 bf16 + SDPA 的 NaN bug）
 - **Base LoRA**：NSFW (w=1.0) + Motion (w=0.7)，**distill LoRA 已移除**
-- **Position LoRA**：10 個 position 熱切換（各自權重見 config.py）；音訊層（audio_attn1/2、audio_ff、audio_to_video_attn、video_to_audio_attn）在 position LoRA 和 base LoRA swap 時都會跳過，避免破壞 speech 生成
+- **Position LoRA**：11 個 position 熱切換（各自權重見 config.py）；音訊層（audio_attn1/2、audio_ff、audio_to_video_attn、video_to_audio_attn）在 position LoRA 和 base LoRA swap 時都會跳過，避免破壞 speech 生成
 
 ---
 
@@ -349,7 +351,7 @@ FastAPI (server.py)
   ├── LTXInferenceActor  [num_gpus=0.8]
   │    ├── DistilledPipeline (Transformer 常駐 ~43GB VRAM)
   │    ├── PersistentPromptEncoder (Gemma-3 12B bf16 常駐 ~24GB VRAM)
-  │    └── PersistentDiffusionStage (10 個 position delta 預載於 CPU RAM)
+  │    └── PersistentDiffusionStage (11 個 position delta 預載於 CPU RAM)
   │
   └── GFPGANEnhanceActor [num_gpus=0.2]
        ├── GFPGANv1.4 (常駐 ~525MB VRAM)
@@ -640,7 +642,7 @@ export LD_LIBRARY_PATH=/usr/local/lib/python3.11/dist-packages/nvidia/cu13/lib:$
 | `pkill -f server.py` 後 VRAM 不降 | Ray worker zombie 進程仍佔 VRAM（`nvidia-smi` 無進程但顯示使用中）| `ps aux \| grep -E 'python\|ray'` → `kill -9 <所有 PID>` → 等 VRAM 降至 &lt;100MB 再重啟 |
 | Server 停在 VRAM=~57GB 不繼續載入 | 上次推理 OOM 的殘留分配，Ray actor 卡住 | 同上：完整 kill 所有 Python/Ray 進程，VRAM 歸零後重啟 |
 | LoRA 視覺無效果（blow_job/dildo/boobs_play） | 訓練時 `first_frame_conditioning_p=0.35`，但推理永遠用 I2V（image_strength=0.9），參數不匹配 | 以正確參數重新訓練：`first_frame_conditioning_p=0.5`、`adamw8bit`、`1500 steps` |
-| `OSError: [Errno 122] Disk quota exceeded` 寫入 /workspace | MooseFS inode/chunk quota（與磁碟空間無關，即使有 87TB 可用）| 所有寫入改到 `/root/`；`rm` 可用；`cp`/`dd`/`python open('w')` 均失敗 |
+| `OSError: [Errno 122] Disk quota exceeded` 寫入 /workspace | MooseFS inode/chunk quota（與磁碟空間無關，即使有 87TB 可用）| ⚠️ **`/root` 只 20GB 塞不下 43GB distilled model**。解法：下載到 `/dev/shm`（117GB tmpfs，RAM-backed），然後 `ln -s /dev/shm/ltx23/ltx-2.3-22b-distilled.safetensors /workspace/models/ltx23/ltx-2.3-22b-distilled.safetensors`；outputs 同樣 `ln -s /dev/shm/outputs /workspace/outputs`；server log 也改寫 `/dev/shm/parrot-api.log`。Pod 重啟後 /dev/shm 消失要重下（~3 分鐘 wget / aria2c）。 |
 | `FileNotFoundError: /workspace/models/loras/dildo.safetensors` | 換新 pod 後，symlink 指向舊 pod 的 `/root/dildo_v2_output/` 路徑，目標消失 | 從 `/root/config.py` 移除 dildo/boobs_play entry；等重訓後補回 |
 | `ModuleNotFoundError: No module named 'config'` | `PYTHONPATH` 未設定 + `/workspace/parrot-api/config.py` 被刪除 | 確認 `/root/config.py` 存在且 `PYTHONPATH=/root` 有 export，再重啟 |
 | `torchaudio` ABI 不相容（`undefined symbol: torch_library_impl`） | 換 pod/環境後 torchaudio 版本與 torch 版本不符（如 torchaudio 2.11 + torch 2.7）| `pip install torchaudio==X.Y.Z+cuXXX --index-url ...`（版本必須與 torch 完全一致） |
