@@ -107,6 +107,14 @@ class LTXInferenceActor:
         key = _pos_key(position, position_w)
         self._persistent_stage.swap_position_lora(key)
 
+    def _ensure_base_loras(self, nsfw_w: float, motion_w: float) -> None:
+        """Hot-swap NSFW/Motion base LoRA weights if changed (~1s, GPU layer-by-layer)."""
+        if nsfw_w == self._current_nsfw_w and motion_w == self._current_motion_w:
+            return
+        self._persistent_stage.swap_base_loras({"nsfw": nsfw_w, "motion": motion_w})
+        self._current_nsfw_w = nsfw_w
+        self._current_motion_w = motion_w
+
     def generate(
         self,
         prompt: str,
@@ -142,6 +150,7 @@ class LTXInferenceActor:
         if position_weight is None:
             position_w = cfg.POSITION_LORA_WEIGHTS.get(position, position_w)
 
+        self._ensure_base_loras(nsfw_w, motion_w)
         self._ensure_position(position, position_w)
 
         images = [ImageConditioningInput(path=image_path, frame_idx=0, strength=image_strength)]
