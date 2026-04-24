@@ -23,7 +23,7 @@ POSITION_LORAS = {
     "cowgirl":         str(LORA_DIR / "cowgirl.safetensors"),
     "doggy":           str(LORA_DIR / "doggy.safetensors"),
     "handjob":         str(LORA_DIR / "handjob.safetensors"),
-    "lift_clothes":    str(LORA_DIR / "lift_clothes_v3.safetensors"),
+    "lift_clothes":    str(LORA_DIR / "lift_clothes.safetensors"),
     "masturbation":    str(LORA_DIR / "masturbation.safetensors"),
     "missionary":      str(LORA_DIR / "missionary.safetensors"),
     "reverse_cowgirl": str(LORA_DIR / "reverse_cowgirl.safetensors"),
