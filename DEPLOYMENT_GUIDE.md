@@ -225,7 +225,7 @@ exec python3 -m workers.gpu_worker --gpu_id 0
 │       ├── dildo.safetensors                           ← 熱切換 w=0.8（自訓練 v3 step1250）
 │       ├── doggy.safetensors                           ← 熱切換 w=0.8  CivitAI
 │       ├── handjob.safetensors                         ← 熱切換 w=0.8（自訓練；stack blow_job w=0.6）
-│       ├── lift_clothes_v2.safetensors                 ← 熱切換 w=0.6（自訓練 production v2；來源 models_backup/ltx23_production/positions/）
+│       ├── lift_clothes.safetensors                    ← 熱切換 w=0.6（自訓練 v3 extended step2750，2026-04-24 upgrade；舊 v2 存為 lift_clothes.v2.backup.safetensors）
 │       ├── masturbation.safetensors                    ← 熱切換 w=0.8  CivitAI
 │       ├── missionary.safetensors                      ← 熱切換 w=0.8  CivitAI
 │       ├── reverse_cowgirl.safetensors                 ← 熱切換 w=0.8  CivitAI

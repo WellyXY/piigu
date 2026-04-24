@@ -20,7 +20,7 @@ Transformer（43GB，常駐 VRAM）
           ├── dildo.safetensors            w=0.8  自訓練 v3 step1250（有效；本地來源見下方）
           ├── doggy.safetensors            w=0.8  CivitAI（有效）
           ├── handjob.safetensors          w=0.8  自訓練 v2（有效；+ stacked blow_job w=0.6）
-          ├── lift_clothes_v2.safetensors  w=0.6  自訓練 production v2（有效；nsfw/motion 前端預設 0.0/0.0）
+          ├── lift_clothes.safetensors     w=0.6  自訓練 v3 extended step2750（2026-04-24；nsfw/motion 前端預設 0.0/0.0）
           ├── masturbation.safetensors     w=0.8  CivitAI（有效）
           ├── missionary.safetensors       w=0.8  CivitAI（有效）
           ├── reverse_cowgirl.safetensors  w=0.8  CivitAI（有效）
@@ -241,7 +241,7 @@ pod 推理 server（parrot-api）
 | dildo | dildo.safetensors | 0.8 | 1.0 | 0.7 | 自訓練 v3 step1250；有效 |
 | doggy | doggy.safetensors | 0.8 | 1.0 | 0.7 | CivitAI；有效 |
 | handjob | handjob.safetensors | 0.8 | 1.0 | 0.7 | 自訓練 v2；有效；同時 stack blow_job w=0.6 |
-| lift_clothes | lift_clothes_v2.safetensors | **0.6** | **0.0** | **0.0** | 自訓練 production v2；有效 |
+| lift_clothes | lift_clothes.safetensors | **0.6** | **0.0** | **0.0** | 自訓練 v3 extended step2750（MD5 d7410c7b...，2026-04-24 upgrade）；DEFAULT_PROMPTS 改為訓練 caption `A female grips the hem... clearly visible erect pink nipples...` + `--lift_clothes` trigger |
 | masturbation | masturbation.safetensors | 0.8 | 1.0 | 0.7 | CivitAI；有效 |
 | missionary | missionary.safetensors | 0.8 | 1.0 | 0.7 | CivitAI；有效 |
 | reverse_cowgirl | reverse_cowgirl.safetensors | 0.8 | 1.0 | 0.7 | CivitAI；有效 |
