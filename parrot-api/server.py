@@ -148,9 +148,12 @@ async def generate(req: GenerateRequest):
                     num_frames=req.num_frames,
                     frame_rate=req.frame_rate,
                     seed=req.seed,
-                    nsfw_w=lw.get("nsfw", 1.0),
-                    motion_w=lw.get("motion", 0.7),
-                    position_w=lw.get("position", 0.8),
+                    # Use _weight aliases so actor.generate's "explicit override" branch wins
+                    # over the per-position config default fallback (otherwise frontend position_w
+                    # is silently clobbered by cfg.POSITION_LORA_WEIGHTS[position]).
+                    nsfw_weight=lw.get("nsfw", 1.0),
+                    motion_weight=lw.get("motion", 0.7),
+                    position_weight=lw.get("position", 0.8),
                     image_strength=req.image_strength,
                     enhance_prompt=req.enhance_prompt,
                 ),
