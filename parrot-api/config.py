@@ -38,7 +38,7 @@ POSITION_LORA_WEIGHTS: dict[str, float] = {
     "cowgirl":         0.8,
     "doggy":           0.8,
     "handjob":         0.8,
-    "lift_clothes":    0.6,
+    "lift_clothes":    0.7,   # v3 extended step2750; 0.7 實測最佳
     "masturbation":    0.8,
     "missionary":      0.8,
     "reverse_cowgirl": 0.8,

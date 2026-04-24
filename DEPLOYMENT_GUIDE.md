@@ -225,7 +225,7 @@ exec python3 -m workers.gpu_worker --gpu_id 0
 │       ├── dildo.safetensors                           ← 熱切換 w=0.8（自訓練 v3 step1250）
 │       ├── doggy.safetensors                           ← 熱切換 w=0.8  CivitAI
 │       ├── handjob.safetensors                         ← 熱切換 w=0.8（自訓練；stack blow_job w=0.6）
-│       ├── lift_clothes.safetensors                    ← 熱切換 w=0.6（自訓練 v3 extended step2750，2026-04-24 upgrade；舊 v2 存為 lift_clothes.v2.backup.safetensors）
+│       ├── lift_clothes.safetensors                    ← 熱切換 w=0.7（自訓練 v3 extended step2750，2026-04-24 升級；0.7 實測最佳；舊 v2 存為 lift_clothes.v2.backup.safetensors）
 │       ├── masturbation.safetensors                    ← 熱切換 w=0.8  CivitAI
 │       ├── missionary.safetensors                      ← 熱切換 w=0.8  CivitAI
 │       ├── reverse_cowgirl.safetensors                 ← 熱切換 w=0.8  CivitAI
@@ -270,7 +270,7 @@ POSITION_LORA_WEIGHTS = {
     "cowgirl":         0.8,
     "doggy":           0.8,
     "handjob":         0.8,
-    "lift_clothes":    0.6,
+    "lift_clothes":    0.7,   # v3 extended step2750; 實測 0.7 最佳（升自 0.6）
     "masturbation":    0.8,
     "missionary":      0.8,
     "reverse_cowgirl": 0.8,
